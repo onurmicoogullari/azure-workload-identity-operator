@@ -1,0 +1,1 @@
+# az-workload-identity-operator
