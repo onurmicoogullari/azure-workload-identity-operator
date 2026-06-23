@@ -17,6 +17,9 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# Local tool binaries downloaded by the Makefile
+bin/
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 

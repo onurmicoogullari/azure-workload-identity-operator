@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- workloadidentity_v1alpha1_oidcissuer.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

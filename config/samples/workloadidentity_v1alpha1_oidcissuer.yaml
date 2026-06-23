@@ -1,0 +1,22 @@
+apiVersion: workloadidentity.azure.micosolutions.se/v1alpha1
+kind: OIDCIssuer
+metadata:
+  labels:
+    app.kubernetes.io/name: az-workload-identity-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: default
+spec:
+  azure:
+    subscriptionID: 00000000-0000-0000-0000-000000000000
+    location: swedencentral
+    resourceGroupName: rg-oidc
+    storageAccountName: oidcissuerdemo123
+    blobContainerName: oidc
+  signingKey:
+    secretRef:
+      namespace: kube-system
+      name: service-account-signing-key
+      key: tls.key
+  openShift:
+    updateServiceAccountIssuer: false
+  deletionPolicy: Retain
