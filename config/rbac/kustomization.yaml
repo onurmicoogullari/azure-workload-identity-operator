@@ -22,6 +22,9 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the az-workload-identity-operator itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- workloadidentity_admin_role.yaml
+- workloadidentity_editor_role.yaml
+- workloadidentity_viewer_role.yaml
 - oidcissuer_admin_role.yaml
 - oidcissuer_editor_role.yaml
 - oidcissuer_viewer_role.yaml

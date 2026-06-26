@@ -206,6 +206,16 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "oidcissuer")
 		os.Exit(1)
 	}
+	if err := (&controller.WorkloadIdentityReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Manager: &azure.WorkloadIdentityManager{
+			Credential: azureCredential,
+		},
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentity")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

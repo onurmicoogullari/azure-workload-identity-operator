@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/workloadidentity.azure.micosolutions.se_oidcissuers.yaml
+- bases/workloadidentity.azure.micosolutions.se_workloadidentities.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

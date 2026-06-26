@@ -19,7 +19,12 @@ import (
 	"github.com/onurmicoogullari/az-workload-identity-operator/internal/signingkey"
 )
 
-const managedByTag = "managed-by"
+const (
+	createdByOperatorTag    = "created-by-operator"
+	managedByTag            = "managed-by"
+	operatorCreatedTagValue = "true"
+	operatorName            = "az-workload-identity-operator"
+)
 
 type BlobOIDCDocumentPublisher struct {
 	Client     client.Client
@@ -328,10 +333,10 @@ func issuerURL(issuer *azworkloadidentityv1alpha1.OIDCIssuer) string {
 
 func resourceTags(issuer *azworkloadidentityv1alpha1.OIDCIssuer, createdByOperator bool) map[string]*string {
 	return map[string]*string{
-		managedByTag:          to.Ptr("az-workload-identity-operator"),
-		"oidc-issuer-uid":     to.Ptr(string(issuer.UID)),
-		"created-by-operator": to.Ptr(fmt.Sprintf("%t", createdByOperator)),
-		"operator-api-group":  to.Ptr("workloadidentity.azure.micosolutions.se"),
+		managedByTag:         to.Ptr(operatorName),
+		"oidc-issuer-uid":    to.Ptr(string(issuer.UID)),
+		createdByOperatorTag: to.Ptr(fmt.Sprintf("%t", createdByOperator)),
+		"operator-api-group": to.Ptr("workloadidentity.azure.micosolutions.se"),
 	}
 }
 
@@ -352,7 +357,7 @@ func hasTags(existing, desired map[string]*string) bool {
 }
 
 func wasCreatedByOperator(existing map[string]*string, issuer *azworkloadidentityv1alpha1.OIDCIssuer) bool {
-	if existing == nil || existing["created-by-operator"] == nil || *existing["created-by-operator"] != "true" {
+	if existing == nil || existing[createdByOperatorTag] == nil || *existing[createdByOperatorTag] != operatorCreatedTagValue {
 		return false
 	}
 	return hasTags(existing, resourceTags(issuer, true))
