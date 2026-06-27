@@ -18,4 +18,13 @@ resources:
   kind: OIDCIssuer
   path: github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: workloadidentity.azure.micosolutions.se
+  group: workloadidentity
+  kind: WorkloadIdentity
+  path: github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

@@ -4,11 +4,11 @@ The operator uses `DefaultAzureCredential`. In-cluster, this normally means the 
 
 ## Required Azure Permissions
 
-The operator needs both Azure Resource Manager permissions and Azure Storage data-plane permissions.
+The operator needs Azure Resource Manager permissions. `OIDCIssuer` also needs Azure Storage data-plane permissions.
 
 ### Resource Management
 
-Required for reconciling the `OIDCIssuer` Azure resources:
+Required for reconciling `OIDCIssuer` Azure resources:
 
 - read/create/update/delete resource groups
 - read/create/update/delete storage accounts
@@ -17,6 +17,14 @@ Required for reconciling the `OIDCIssuer` Azure resources:
 If the resource group already exists, scope these permissions to that resource group.
 
 If the resource group does not exist and the operator must create it, scope these permissions at the subscription level.
+
+Required for reconciling `WorkloadIdentity` Azure resources:
+
+- read/create/update/delete resource groups
+- read/create/update/delete user assigned managed identities
+- read/create/update/delete federated identity credentials
+
+If the resource group already exists, scope these permissions to that resource group. If the operator must create the resource group, scope resource group permissions at the subscription level.
 
 ### Blob Uploads
 
@@ -68,6 +76,8 @@ The operator reads the configured signing key Secret during reconciliation. To a
 
 ## Deletion Behavior
 
+### OIDCIssuer
+
 When `spec.deletionPolicy` is `Retain`, the operator removes its finalizer and leaves Azure resources in place.
 
 When `spec.deletionPolicy` is `Delete`, the operator:
@@ -85,3 +95,34 @@ The operator tracks created/adopted Azure resources using tags:
 - `operator-api-group=workloadidentity.azure.micosolutions.se`
 
 Azure resources have a tag limit. If an adopted resource already has too many tags for the operator to add its ownership tags, reconciliation fails and the `OIDCIssuer` status condition contains the Azure error.
+
+### WorkloadIdentity
+
+When `spec.deletionPolicy` is `Retain`, the operator removes its finalizer and leaves Azure resources and the ServiceAccount in place.
+
+When `spec.deletionPolicy` is `Delete`, the operator:
+
+- deletes the federated identity credential named in `spec.azure.federatedIdentityCredentialName`
+- deletes the user assigned managed identity only if it was created by the operator
+- deletes the resource group only if it was created by the operator
+- deletes the ServiceAccount only if it was created by the operator
+
+Federated identity credentials do not support tags. The operator therefore treats the configured federated identity credential name as owned by the `WorkloadIdentity`: it is always converged and it is deleted when `spec.deletionPolicy` is `Delete`.
+
+The operator tracks created/adopted `WorkloadIdentity` Azure resources using tags:
+
+- `managed-by=az-workload-identity-operator`
+- `workload-identity-uid=<kubernetes-uid>`
+- `created-by-operator=true|false`
+- `operator-api-group=workloadidentity.azure.micosolutions.se`
+
+The operator tracks created/adopted ServiceAccounts using labels:
+
+- `azure.workload.identity/use=true`
+- `workloadidentity.azure.micosolutions.se/managed-by=az-workload-identity-operator`
+- `workloadidentity.azure.micosolutions.se/workload-identity-uid=<kubernetes-uid>`
+- `workloadidentity.azure.micosolutions.se/created-by-operator=true|false`
+
+Adopted ServiceAccounts are annotated with the Azure client ID and tenant ID, but are not deleted by the operator.
+
+The default manager RBAC grants ServiceAccount `get/list/watch/create/update/patch/delete`. It still does not grant Secret access.

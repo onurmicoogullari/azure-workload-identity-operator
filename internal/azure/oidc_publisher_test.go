@@ -22,28 +22,28 @@ func TestResourceTags(t *testing.T) {
 	issuer := testOIDCIssuer()
 	tags := resourceTags(issuer, true)
 
-	if *tags["managed-by"] != "az-workload-identity-operator" {
-		t.Fatalf("managed-by tag = %q", *tags["managed-by"])
+	if *tags[managedByTag] != operatorName {
+		t.Fatalf("managed-by tag = %q", *tags[managedByTag])
 	}
 	if *tags["oidc-issuer-uid"] != "test-uid" {
 		t.Fatalf("oidc-issuer-uid tag = %q", *tags["oidc-issuer-uid"])
 	}
-	if *tags["created-by-operator"] != "true" {
-		t.Fatalf("created-by-operator tag = %q", *tags["created-by-operator"])
+	if *tags[createdByOperatorTag] != operatorCreatedTagValue {
+		t.Fatalf("created-by-operator tag = %q", *tags[createdByOperatorTag])
 	}
 }
 
 func TestMergeTagsPreservesExistingTags(t *testing.T) {
 	merged := mergeTags(
 		map[string]*string{"environment": to.Ptr("dev"), managedByTag: to.Ptr("someone-else")},
-		map[string]*string{"managed-by": to.Ptr("az-workload-identity-operator")},
+		map[string]*string{managedByTag: to.Ptr(operatorName)},
 	)
 
 	if *merged["environment"] != "dev" {
 		t.Fatalf("environment tag = %q", *merged["environment"])
 	}
-	if *merged["managed-by"] != "az-workload-identity-operator" {
-		t.Fatalf("managed-by tag = %q", *merged["managed-by"])
+	if *merged[managedByTag] != operatorName {
+		t.Fatalf("managed-by tag = %q", *merged[managedByTag])
 	}
 }
 
@@ -56,14 +56,14 @@ func TestWasCreatedByOperator(t *testing.T) {
 	if wasCreatedByOperator(resourceTags(issuer, false), issuer) {
 		t.Fatal("expected adopted tags not to match")
 	}
-	if wasCreatedByOperator(map[string]*string{"managed-by": to.Ptr("someone-else")}, issuer) {
+	if wasCreatedByOperator(map[string]*string{managedByTag: to.Ptr("someone-else")}, issuer) {
 		t.Fatal("expected unrelated tags not to match")
 	}
 }
 
 func testOIDCIssuer() *azworkloadidentityv1alpha1.OIDCIssuer {
 	return &azworkloadidentityv1alpha1.OIDCIssuer{
-		ObjectMeta: metav1.ObjectMeta{Name: "default", UID: types.UID("test-uid")},
+		ObjectMeta: metav1.ObjectMeta{Name: azworkloadidentityv1alpha1.OIDCIssuerName, UID: types.UID("test-uid")},
 		Spec: azworkloadidentityv1alpha1.OIDCIssuerSpec{
 			Azure: azworkloadidentityv1alpha1.AzureOIDCIssuerConfig{
 				StorageAccountName: "oidctest123",

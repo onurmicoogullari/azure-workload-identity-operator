@@ -5,6 +5,18 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - config.openshift.io
   resources:
   - authentications
@@ -18,6 +30,7 @@ rules:
   - workloadidentity.azure.micosolutions.se
   resources:
   - oidcissuers
+  - workloadidentities
   verbs:
   - create
   - delete
@@ -30,12 +43,14 @@ rules:
   - workloadidentity.azure.micosolutions.se
   resources:
   - oidcissuers/finalizers
+  - workloadidentities/finalizers
   verbs:
   - update
 - apiGroups:
   - workloadidentity.azure.micosolutions.se
   resources:
   - oidcissuers/status
+  - workloadidentities/status
   verbs:
   - get
   - patch
