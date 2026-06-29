@@ -1,0 +1,19 @@
+apiVersion: workloadidentity.azure.micosolutions.se/v1alpha1
+kind: OIDCIssuer
+metadata:
+  name: default
+spec:
+  azure:
+    subscriptionID: ${AZURE_SUBSCRIPTION_ID}
+    location: ${AZURE_LOCATION}
+    resourceGroupName: ${AZURE_RESOURCE_GROUP_NAME}
+    storageAccountName: ${AZURE_STORAGE_ACCOUNT_NAME}
+    blobContainerName: ${AZURE_BLOB_CONTAINER_NAME}
+  signingKey:
+    secretRef:
+      namespace: ${SIGNING_KEY_SECRET_NAMESPACE}
+      name: ${SIGNING_KEY_SECRET_NAME}
+      key: ${SIGNING_KEY_SECRET_KEY}
+  openShift:
+    updateServiceAccountIssuer: ${OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER}
+  deletionPolicy: ${OIDC_ISSUER_DELETION_POLICY}
