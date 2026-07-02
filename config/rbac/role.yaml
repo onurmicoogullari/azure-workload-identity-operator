@@ -27,6 +27,12 @@ rules:
   - update
   - watch
 - apiGroups:
+  - config.openshift.io
+  resources:
+  - clusteroperators
+  verbs:
+  - get
+- apiGroups:
   - workloadidentity.azure.micosolutions.se
   resources:
   - oidcissuers

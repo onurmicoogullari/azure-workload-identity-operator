@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -268,6 +269,46 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyMetricsAvailable, 2*time.Minute).Should(Succeed())
 		})
 
+		It("should reject deleting OIDCIssuer while WorkloadIdentities exist", func() {
+			waitForValidatingWebhook()
+
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "delete", "workloadidentity", "e2e-blocking-workload",
+					"-n", "default", "--ignore-not-found", "--timeout=2m")
+				_, _ = utils.Run(cmd)
+
+				cmd = exec.Command("kubectl", "delete", "oidcissuer", "default", "--ignore-not-found", "--timeout=2m")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("creating an OIDCIssuer and WorkloadIdentity")
+			cmd := exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(e2eOIDCIssuerYAML + "\n---\n" + e2eWorkloadIdentityYAML)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying deletion is rejected before the OIDCIssuer enters deletion")
+			cmd = exec.Command("kubectl", "delete", "oidcissuer", "default")
+			output, err := utils.Run(cmd)
+			Expect(err).To(HaveOccurred())
+			Expect(output + err.Error()).To(ContainSubstring("OIDCIssuer deletion is blocked"))
+
+			cmd = exec.Command("kubectl", "get", "oidcissuer", "default", "-o", "jsonpath={.metadata.deletionTimestamp}")
+			output, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(BeEmpty())
+
+			By("deleting the WorkloadIdentity so OIDCIssuer cleanup can proceed")
+			cmd = exec.Command("kubectl", "delete", "workloadidentity", "e2e-blocking-workload",
+				"-n", "default", "--timeout=2m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "delete", "oidcissuer", "default", "--timeout=2m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
 		// TODO: Customize the e2e test suite with scenarios specific to your project.
@@ -330,6 +371,28 @@ func getMetricsOutput() (string, error) {
 	return utils.Run(cmd)
 }
 
+func waitForValidatingWebhook() {
+	By("waiting for the webhook service endpoints to be ready")
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "endpointslices.discovery.k8s.io", "-n", namespace,
+			"-l", "kubernetes.io/service-name=az-workload-identity-operator-webhook-service",
+			"-o", "jsonpath={range .items[*]}{range .endpoints[*]}{.addresses[*]}{end}{end}")
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "Webhook endpoints should exist")
+		g.Expect(output).ShouldNot(BeEmpty(), "Webhook endpoints not yet ready")
+	}, 3*time.Minute, time.Second).Should(Succeed())
+
+	By("waiting for the validating webhook CA bundle")
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations.admissionregistration.k8s.io",
+			"az-workload-identity-operator-validating-webhook-configuration",
+			"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred(), "ValidatingWebhookConfiguration should exist")
+		g.Expect(output).ShouldNot(BeEmpty(), "Validating webhook CA bundle not yet injected")
+	}, 3*time.Minute, time.Second).Should(Succeed())
+}
+
 // tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
 // containing only the token field that we need to extract.
 type tokenRequest struct {
@@ -337,3 +400,41 @@ type tokenRequest struct {
 		Token string `json:"token"`
 	} `json:"status"`
 }
+
+const e2eOIDCIssuerYAML = `
+apiVersion: workloadidentity.azure.micosolutions.se/v1alpha1
+kind: OIDCIssuer
+metadata:
+  name: default
+spec:
+  azure:
+    subscriptionID: 00000000-0000-0000-0000-000000000000
+    location: swedencentral
+    resourceGroupName: rg-e2e-oidc
+    storageAccountName: e2eoidcissuer123
+    blobContainerName: oidc
+  signingKey:
+    secretRef:
+      namespace: kube-system
+      name: service-account-signing-key
+      key: tls.key
+  deletionPolicy: Retain
+`
+
+const e2eWorkloadIdentityYAML = `
+apiVersion: workloadidentity.azure.micosolutions.se/v1alpha1
+kind: WorkloadIdentity
+metadata:
+  name: e2e-blocking-workload
+  namespace: default
+spec:
+  azure:
+    subscriptionID: 00000000-0000-0000-0000-000000000000
+    location: swedencentral
+    resourceGroupName: rg-e2e-workload
+    userAssignedIdentityName: uami-e2e-workload
+    federatedIdentityCredentialName: fic-e2e-workload
+  serviceAccount:
+    name: e2e-workload
+  deletionPolicy: Retain
+`

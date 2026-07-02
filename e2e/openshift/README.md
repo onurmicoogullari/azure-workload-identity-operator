@@ -64,10 +64,11 @@ From the repository root:
 The script has defaults chosen to avoid common local name collisions:
 
 - Test namespace and service account: `azwi-crc-test`
-- OIDC issuer resource group: `rg-azwi-crc-test`
+- OIDC issuer storage resource group: `rg-azwi-crc-storage-test`
 - WorkloadIdentity resource group: `rg-azwi-crc-wi-test`
+- Key Vault resource group: `rg-azwi-crc-kv-test`
 - Storage account: `stazwicrctest`
-- Key Vault: `kv-azwi-crc-test`
+- Key Vault: `kv-azwi-<HHMMSS>-<random>` unless `KEY_VAULT_NAME` is set
 
 Run this for the full list of overrides:
 
@@ -75,9 +76,10 @@ Run this for the full list of overrides:
 ./e2e/openshift/e2e-test.sh --help
 ```
 
-By default, the script expects the two Azure resource groups to be absent at the
+By default, the script expects the Azure resource groups to be absent at the
 start of the run. That is intentional: the test verifies that the operator can
-delete resource groups it created.
+delete the OIDCIssuer and WorkloadIdentity groups it created, while the script
+creates and deletes the Key Vault group it owns.
 
 ## What The Test Proves
 
@@ -86,7 +88,8 @@ The test covers the full local integration path:
 1. The `OIDCIssuer` controller creates Azure issuer storage and publishes OIDC
    discovery/JWKS documents.
 2. The operator updates OpenShift to use the published OIDC issuer as the
-   service-account token issuer.
+   service-account token issuer and records the previous configured issuer in
+   `OIDCIssuer/default.status.previousServiceAccountIssuer`.
 3. OpenShift rolls the API server and starts minting service-account tokens with
    the new issuer.
 4. The `WorkloadIdentity` controller creates a user-assigned managed identity,
@@ -96,8 +99,13 @@ The test covers the full local integration path:
    Azure environment into the test Job.
 6. The test Job exchanges the OpenShift service-account token for Azure
    credentials and reads a real Key Vault secret.
-7. Deleting the `WorkloadIdentity` and `OIDCIssuer` removes the Azure resources
-   that the operator created.
+7. The OIDCIssuer validating webhook rejects deletion while the
+   `WorkloadIdentity` still exists, before the resource enters deletion.
+8. After the `WorkloadIdentity` is deleted, the OIDCIssuer validating webhook
+   rejects deletion while OpenShift still references the issuer URL.
+9. The script performs the manual OpenShift service-account issuer handoff, then
+   deletes the `OIDCIssuer` and verifies the operator removes the
+   OIDCIssuer-created Azure resources.
 
 ## What The Script Does
 
@@ -113,8 +121,9 @@ At a high level, `e2e-test.sh`:
    assigns namespace-scoped UID ranges via SCCs, so the script removes only
    those fixed IDs.
 5. Installs this operator's CRDs with `make install`.
-6. Starts the operator locally with `make run`, using the current kubeconfig and
-   Azure CLI-backed `DefaultAzureCredential`.
+6. Starts the operator locally with `go run`, using the current kubeconfig,
+   Azure CLI-backed `DefaultAzureCredential`, and a short-lived local webhook
+   serving certificate.
 7. Creates the test namespace if it does not already exist.
 8. Applies `oidc-issuer.yaml`.
 9. Grants the operator identity `Storage Blob Data Contributor` on the generated
@@ -124,9 +133,7 @@ At a high level, `e2e-test.sh`:
     match the issuer URL, waits for the kube-apiserver operator to settle, and
     verifies newly minted service-account tokens contain the expected `iss`
     claim.
-12. Creates the Key Vault inside the OIDCIssuer-owned resource group. This
-    intentionally makes OIDCIssuer resource-group deletion prove that the whole
-    test resource group is removed.
+12. Creates the Key Vault inside the script-owned Key Vault resource group.
 13. Applies `workload-identity.yaml` and waits for it to become `Ready`.
 14. Uploads the test secret to Key Vault and grants the workload identity
     `Key Vault Secrets User`.
@@ -135,6 +142,8 @@ At a high level, `e2e-test.sh`:
 16. Runs `job.yaml` and waits for it to complete.
 17. Prints the Job logs. A successful run includes the retrieved Key Vault
     secret value.
+18. Verifies the OIDCIssuer validating webhook rejects deletion while the
+    `WorkloadIdentity` still exists and leaves the OIDCIssuer active.
 
 ## Cleanup
 
@@ -144,18 +153,28 @@ waits for the operator finalizers to finish:
 - Test Job
 - `WorkloadIdentity`
 - `OIDCIssuer`
+- Key Vault Azure resource group
 - WorkloadIdentity Azure resource group
 - OIDCIssuer Azure resource group
+- Role assignments created by the script
 - OpenShift BuildConfig/ImageStream created for the reader app
 - Locally started operator process
 - Azure Workload Identity webhook Helm release, if the script created it
 - Test namespaces, if the script created them
 
-Role assignments are not cleaned up separately. They disappear with the Azure
-resources that the test deletes.
+Any remaining role assignments disappear with the Azure resources that the test
+deletes.
 
-The script does not restore the previous OpenShift service-account issuer. Use a
-dedicated CRC cluster and rerun the test from a clean state when needed.
+When `OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER=true`, the script also validates
+the manual handoff guard. It first confirms `OIDCIssuer/default` cannot be
+deleted while `Authentication/cluster.spec.serviceAccountIssuer` still points at
+the published issuer, then disables OIDCIssuer issuer management, restores the
+captured OpenShift issuer value, waits for rollout, and finally deletes the
+`OIDCIssuer`.
+
+The OpenShift script runs the operator locally by default, so it exercises the
+local validating webhook endpoint directly for the deletion rejection check.
+The Kind e2e suite covers the deployed `ValidatingWebhookConfiguration` path.
 
 ## Files
 

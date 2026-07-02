@@ -1,7 +1,7 @@
 # This rule is not used by the project az-workload-identity-operator itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants permissions to create, update, and delete resources within the workloadidentity.workloadidentity.azure.micosolutions.se.
+# Grants permissions to create, update, and delete resources within the workloadidentity.azure.micosolutions.se.
 # This role is intended for users who need to manage these resources
 # but should not control RBAC or manage permissions for others.
 
@@ -14,7 +14,7 @@ metadata:
   name: workloadidentity-editor-role
 rules:
 - apiGroups:
-  - workloadidentity.workloadidentity.azure.micosolutions.se
+  - workloadidentity.azure.micosolutions.se
   resources:
   - workloadidentities
   verbs:
@@ -26,7 +26,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - workloadidentity.workloadidentity.azure.micosolutions.se
+  - workloadidentity.azure.micosolutions.se
   resources:
   - workloadidentities/status
   verbs:

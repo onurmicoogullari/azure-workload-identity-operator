@@ -163,6 +163,11 @@ func (in *OIDCIssuerStatus) DeepCopyInto(out *OIDCIssuerStatus) {
 		*out = make([]AzureResource, len(*in))
 		copy(*out, *in)
 	}
+	if in.PreviousServiceAccountIssuer != nil {
+		in, out := &in.PreviousServiceAccountIssuer, &out.PreviousServiceAccountIssuer
+		*out = new(string)
+		**out = **in
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

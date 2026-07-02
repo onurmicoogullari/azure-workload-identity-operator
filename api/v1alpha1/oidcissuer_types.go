@@ -135,6 +135,11 @@ type OIDCIssuerStatus struct {
 	// +optional
 	AzureResources []AzureResource `json:"azureResources,omitempty"`
 
+	// previousServiceAccountIssuer is the OpenShift Authentication.spec.serviceAccountIssuer value
+	// captured before this OIDCIssuer updated it. A present empty string means the previous value was empty.
+	// +optional
+	PreviousServiceAccountIssuer *string `json:"previousServiceAccountIssuer,omitempty"`
+
 	// conditions represent the current state of the OIDCIssuer resource.
 	// +listType=map
 	// +listMapKey=type
