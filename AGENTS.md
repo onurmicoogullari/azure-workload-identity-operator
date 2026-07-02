@@ -56,6 +56,76 @@ Always use `kubebuilder create api` and `kubebuilder create webhook` to scaffold
 The e2e tests are designed to validate the solution in an isolated environment (similar to GitHub Actions CI).
 Ensure you run them against a dedicated [Kind](https://kind.sigs.k8s.io/) cluster (not your “real” dev/prod cluster).
 
+### OpenShift E2E Verification Uses Fresh CRC
+When asked to run the OpenShift/CRC e2e verification, use a disposable local
+CRC cluster and reset it before the run:
+
+```bash
+crc delete -f
+crc setup
+crc start
+```
+
+In managed agent shells, keep the shell/session that started CRC open while the
+e2e script runs. CRC can report success and then the local `vfkit` VM can be
+reaped when the starting session closes. A reliable pattern is to open a
+dedicated shell, run `crc start` there, wait for it to finish, and leave that
+shell open until verification is complete.
+
+Do not rely on a fixed sleep to keep CRC alive. Keep a real shell/session open
+for CRC and run `oc`, `az`, `helm`, and the e2e script from separate commands.
+If `crc status` becomes slow or reports `crc does not seem to be setup
+correctly` after the CRC-starting session was closed, rerun `crc setup` to
+restore the host-side CRC state, then start CRC again in a keeper session.
+
+After CRC starts, verify readiness before running the script:
+
+```bash
+eval $(crc oc-env)
+oc login -u kubeadmin -p <password from crc start> https://api.crc.testing:6443
+oc wait clusterversion/version --for='condition=Available=True' --timeout=10m
+oc get clusteroperators
+```
+
+All cluster operators should be `Available=True`, `Progressing=False`, and
+`Degraded=False`.
+
+Run the OpenShift e2e script from the repository root:
+
+```bash
+./e2e/openshift/e2e-test.sh
+```
+
+Always run `eval $(crc oc-env)` in the shell that invokes `oc` or the e2e
+script. The script uses the current kubeconfig/context, so verify `oc whoami`
+is `kubeadmin` before starting.
+
+The script uses the current `oc` session and active Azure CLI account. It
+creates real Azure resources, installs the Azure Workload Identity webhook,
+runs the operator locally, mutates `Authentication/cluster`, builds an
+OpenShift test image, validates Key Vault access, and verifies cleanup. If the
+script exposes a bug, fix it and repeat from `crc delete -f` so each e2e pass
+starts from a clean CRC cluster.
+
+Operational notes from a successful CRC run:
+
+- `crc start` may print the kubeadmin password. Capture it for `oc login`; do
+  not assume an old kubeadmin password still works after `crc delete -f`.
+- The e2e script can be quiet for minutes. Before assuming a code bug, inspect
+  the live cluster state and the operator log path printed by the script.
+- If `OIDCIssuer/default` has `status.issuerURL` and Azure resources but no
+  `Ready` condition yet, OpenShift may still be rolling the kube-apiserver after
+  the service-account issuer patch. Check `oc get co kube-apiserver
+  authentication openshift-apiserver` and wait for `Progressing=False`.
+- Long waits around Azure role assignments and Key Vault authorization can be
+  normal; the script includes retry loops for RBAC propagation.
+- A passing run includes a Job log line like `Successfully retrieved secret`
+  from Key Vault, then validates unsafe OIDCIssuer deletion is rejected before
+  WorkloadIdentity cleanup and again before OpenShift issuer handoff.
+- Closing the CRC keeper session after the test can stop or confuse local CRC
+  state. After verification, run `crc setup` if needed and confirm `crc status`
+  reports the expected stopped/running state.
+
 ## After Making Changes
 
 **After editing `*_types.go` or markers:**

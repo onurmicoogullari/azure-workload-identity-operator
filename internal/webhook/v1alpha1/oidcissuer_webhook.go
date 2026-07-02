@@ -19,7 +19,6 @@ package v1alpha1
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -30,7 +29,6 @@ import (
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
 	"github.com/onurmicoogullari/az-workload-identity-operator/internal/oidcissuer"
-	"github.com/onurmicoogullari/az-workload-identity-operator/internal/workloadidentity"
 )
 
 const blockingWorkloadIdentityReferenceLimit = 5
@@ -93,64 +91,38 @@ func (v *OIDCIssuerValidator) ValidateDelete(ctx context.Context, obj *workloadi
 		return nil, errors.New("OIDCIssuer validator client is not configured")
 	}
 
-	identities := &workloadidentityv1alpha1.WorkloadIdentityList{}
-	if err := v.Client.List(ctx, identities); err != nil {
-		return nil, fmt.Errorf("list WorkloadIdentities before OIDCIssuer deletion: %w", err)
-	}
-	if len(identities.Items) > 0 {
-		message := workloadidentity.DeletionBlockedMessage(identities.Items, blockingWorkloadIdentityReferenceLimit)
-		oidcissuerlog.Info("Rejected OIDCIssuer deletion because WorkloadIdentities still exist", "count", len(identities.Items))
-		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), message)
-	}
-
-	if err := v.validateClusterServiceAccountIssuerHandoff(ctx, obj); err != nil {
+	result, err := oidcissuer.CheckWorkloadIdentityDeletionBlock(ctx, v.Client, blockingWorkloadIdentityReferenceLimit)
+	if err != nil {
 		return nil, err
 	}
-	return nil, v.validateOpenShiftServiceAccountIssuerHandoff(ctx, obj)
-}
-
-func (v *OIDCIssuerValidator) validateClusterServiceAccountIssuerHandoff(ctx context.Context, obj *workloadidentityv1alpha1.OIDCIssuer) error {
-	if !oidcissuer.HasPublishedIssuerURL(obj) {
-		return nil
+	if result.Blocked {
+		oidcissuerlog.Info("Rejected OIDCIssuer deletion because WorkloadIdentities still exist", "count", result.WorkloadIdentityCount)
+		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), result.Message)
 	}
-	if v.ServiceAccountTokens == nil {
-		if v.OpenShiftServiceAccountIssuer != nil {
-			return nil
+
+	result, err = oidcissuer.CheckClusterServiceAccountIssuerHandoff(ctx, obj, v.ServiceAccountTokens, v.OpenShiftServiceAccountIssuer)
+	if err != nil {
+		return nil, err
+	}
+	if result.CheckFailed {
+		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), result.Message)
+	}
+	if result.Blocked {
+		if result.Reason == oidcissuer.ReasonBlockedByClusterServiceAccountIssuer {
+			oidcissuerlog.Info("Rejected OIDCIssuer deletion because the cluster still mints service account tokens with its issuer URL", "issuerURL", obj.Status.IssuerURL)
 		}
-		message := oidcissuer.ClusterServiceAccountIssuerGuardUnavailableMessage(obj.Status.IssuerURL)
-		return forbiddenOIDCIssuerDeletion(obj.GetName(), message)
+		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), result.Message)
 	}
 
-	currentIssuer, err := v.ServiceAccountTokens.CurrentIssuer(ctx)
+	result, err = oidcissuer.CheckOpenShiftServiceAccountIssuerHandoff(ctx, obj, v.OpenShiftServiceAccountIssuer)
 	if err != nil {
-		message := oidcissuer.ClusterServiceAccountIssuerCheckFailedMessage(obj.Status.IssuerURL, err)
-		return forbiddenOIDCIssuerDeletion(obj.GetName(), message)
+		return nil, err
 	}
-	if currentIssuer != obj.Status.IssuerURL {
-		return nil
+	if result.Blocked {
+		oidcissuerlog.Info("Rejected OIDCIssuer deletion because OpenShift still uses its issuer URL", "issuerURL", obj.Status.IssuerURL)
+		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), result.Message)
 	}
-
-	message := oidcissuer.ClusterServiceAccountIssuerDeletionBlockedMessage(obj.Status.IssuerURL)
-	oidcissuerlog.Info("Rejected OIDCIssuer deletion because the cluster still mints service account tokens with its issuer URL", "issuerURL", obj.Status.IssuerURL)
-	return forbiddenOIDCIssuerDeletion(obj.GetName(), message)
-}
-
-func (v *OIDCIssuerValidator) validateOpenShiftServiceAccountIssuerHandoff(ctx context.Context, obj *workloadidentityv1alpha1.OIDCIssuer) error {
-	if !oidcissuer.HasPublishedIssuerURL(obj) || v.OpenShiftServiceAccountIssuer == nil {
-		return nil
-	}
-
-	currentIssuer, err := v.OpenShiftServiceAccountIssuer.Get(ctx)
-	if err != nil {
-		return fmt.Errorf("read OpenShift service account issuer before OIDCIssuer deletion: %w", err)
-	}
-	if currentIssuer != obj.Status.IssuerURL {
-		return nil
-	}
-
-	message := oidcissuer.OpenShiftServiceAccountIssuerDeletionBlockedMessage(obj.Status.IssuerURL)
-	oidcissuerlog.Info("Rejected OIDCIssuer deletion because OpenShift still uses its issuer URL", "issuerURL", obj.Status.IssuerURL)
-	return forbiddenOIDCIssuerDeletion(obj.GetName(), message)
+	return nil, nil
 }
 
 func forbiddenOIDCIssuerDeletion(name, message string) error {

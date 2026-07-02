@@ -37,7 +37,6 @@ import (
 	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
 	"github.com/onurmicoogullari/az-workload-identity-operator/internal/oidc"
 	"github.com/onurmicoogullari/az-workload-identity-operator/internal/oidcissuer"
-	"github.com/onurmicoogullari/az-workload-identity-operator/internal/workloadidentity"
 )
 
 const oidcIssuerFinalizer = "workloadidentity.azure.micosolutions.se/oidcissuer-finalizer"
@@ -148,28 +147,45 @@ func (r *OIDCIssuerReconciler) reconcileDelete(ctx context.Context, issuer *azwo
 		return ctrl.Result{}, nil
 	}
 
-	blocked, err := r.blockDeleteIfWorkloadIdentitiesExist(ctx, issuer)
+	result, err := oidcissuer.CheckWorkloadIdentityDeletionBlock(ctx, r.Client, blockingWorkloadIdentityReferenceLimit)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if blocked {
-		return ctrl.Result{}, nil
+	if result.Blocked {
+		logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because WorkloadIdentities still exist", "count", result.WorkloadIdentityCount)
+		return ctrl.Result{}, r.setNotReady(ctx, issuer, result.Reason, result.Message)
 	}
 
-	blocked, err = r.blockDeleteIfClusterStillMintsIssuer(ctx, issuer)
+	result, err = oidcissuer.CheckClusterServiceAccountIssuerHandoff(ctx, issuer, r.ServiceAccountTokens, r.OpenShiftServiceAccountIssuer)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if blocked {
+	if result.CheckFailed {
+		statusErr := r.setNotReady(ctx, issuer, result.Reason, result.Message)
+		if statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, fmt.Errorf("verify cluster service account token issuer before OIDCIssuer deletion: %w", result.Err)
+	}
+	if result.Blocked {
+		if result.Reason == oidcissuer.ReasonClusterServiceAccountIssuerGuardUnavailable {
+			logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because no cluster service account issuer guard is configured", "issuerURL", issuer.Status.IssuerURL)
+		} else {
+			logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because the cluster still mints service account tokens with its issuer URL", "issuerURL", issuer.Status.IssuerURL)
+		}
+		if err := r.setNotReady(ctx, issuer, result.Reason, result.Message); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{RequeueAfter: defaultServiceAccountIssuerCheckPeriod}, nil
 	}
 
-	blocked, err = r.blockDeleteIfOpenShiftStillUsesIssuer(ctx, issuer)
+	result, err = oidcissuer.CheckOpenShiftServiceAccountIssuerHandoff(ctx, issuer, r.OpenShiftServiceAccountIssuer)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if blocked {
-		return ctrl.Result{}, nil
+	if result.Blocked {
+		logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because OpenShift still uses its issuer URL", "issuerURL", issuer.Status.IssuerURL)
+		return ctrl.Result{}, r.setNotReady(ctx, issuer, result.Reason, result.Message)
 	}
 
 	if issuer.Spec.DeletionPolicy == azworkloadidentityv1alpha1.DeletionPolicyDelete {
@@ -184,69 +200,6 @@ func (r *OIDCIssuerReconciler) reconcileDelete(ctx context.Context, issuer *azwo
 
 	controllerutil.RemoveFinalizer(issuer, oidcIssuerFinalizer)
 	return ctrl.Result{}, r.Update(ctx, issuer)
-}
-
-func (r *OIDCIssuerReconciler) blockDeleteIfWorkloadIdentitiesExist(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer) (bool, error) {
-	identities := &azworkloadidentityv1alpha1.WorkloadIdentityList{}
-	if err := r.List(ctx, identities); err != nil {
-		return false, fmt.Errorf("list WorkloadIdentities before OIDCIssuer deletion: %w", err)
-	}
-	if len(identities.Items) == 0 {
-		return false, nil
-	}
-
-	message := workloadidentity.DeletionBlockedMessage(identities.Items, blockingWorkloadIdentityReferenceLimit)
-	logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because WorkloadIdentities still exist", "count", len(identities.Items))
-	return true, r.setNotReady(ctx, issuer, "BlockedByWorkloadIdentities", message)
-}
-
-func (r *OIDCIssuerReconciler) blockDeleteIfClusterStillMintsIssuer(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer) (bool, error) {
-	if !oidcissuer.HasPublishedIssuerURL(issuer) {
-		return false, nil
-	}
-	if r.ServiceAccountTokens == nil {
-		if r.OpenShiftServiceAccountIssuer != nil {
-			return false, nil
-		}
-		message := oidcissuer.ClusterServiceAccountIssuerGuardUnavailableMessage(issuer.Status.IssuerURL)
-		logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because no cluster service account issuer guard is configured", "issuerURL", issuer.Status.IssuerURL)
-		return true, r.setNotReady(ctx, issuer, "ClusterServiceAccountIssuerGuardUnavailable", message)
-	}
-
-	currentIssuer, err := r.ServiceAccountTokens.CurrentIssuer(ctx)
-	if err != nil {
-		message := oidcissuer.ClusterServiceAccountIssuerCheckFailedMessage(issuer.Status.IssuerURL, err)
-		statusErr := r.setNotReady(ctx, issuer, "ClusterServiceAccountIssuerCheckFailed", message)
-		if statusErr != nil {
-			return false, statusErr
-		}
-		return false, fmt.Errorf("verify cluster service account token issuer before OIDCIssuer deletion: %w", err)
-	}
-	if currentIssuer != issuer.Status.IssuerURL {
-		return false, nil
-	}
-
-	message := oidcissuer.ClusterServiceAccountIssuerDeletionBlockedMessage(issuer.Status.IssuerURL)
-	logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because the cluster still mints service account tokens with its issuer URL", "issuerURL", issuer.Status.IssuerURL)
-	return true, r.setNotReady(ctx, issuer, "BlockedByClusterServiceAccountIssuer", message)
-}
-
-func (r *OIDCIssuerReconciler) blockDeleteIfOpenShiftStillUsesIssuer(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer) (bool, error) {
-	if !oidcissuer.HasPublishedIssuerURL(issuer) || r.OpenShiftServiceAccountIssuer == nil {
-		return false, nil
-	}
-
-	currentIssuer, err := r.OpenShiftServiceAccountIssuer.Get(ctx)
-	if err != nil {
-		return false, fmt.Errorf("read OpenShift service account issuer before OIDCIssuer deletion: %w", err)
-	}
-	if currentIssuer != issuer.Status.IssuerURL {
-		return false, nil
-	}
-
-	message := oidcissuer.OpenShiftServiceAccountIssuerDeletionBlockedMessage(issuer.Status.IssuerURL)
-	logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because OpenShift still uses its issuer URL", "issuerURL", issuer.Status.IssuerURL)
-	return true, r.setNotReady(ctx, issuer, "BlockedByOpenShiftServiceAccountIssuer", message)
 }
 
 func (r *OIDCIssuerReconciler) reconcileOpenShiftServiceAccountIssuer(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer, issuerURL string) error {
@@ -296,9 +249,9 @@ func (r *OIDCIssuerReconciler) reconcileOpenShiftServiceAccountIssuer(ctx contex
 }
 
 func (r *OIDCIssuerReconciler) capturePreviousServiceAccountIssuer(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer, previousIssuer string) error {
-	original := issuer.DeepCopy()
-	issuer.Status.PreviousServiceAccountIssuer = &previousIssuer
-	return r.Status().Patch(ctx, issuer, client.MergeFrom(original))
+	return r.patchOIDCIssuerStatus(ctx, issuer, func(status *azworkloadidentityv1alpha1.OIDCIssuerStatus) {
+		status.PreviousServiceAccountIssuer = &previousIssuer
+	})
 }
 
 func shouldUpdateOpenShiftServiceAccountIssuer(issuer *azworkloadidentityv1alpha1.OIDCIssuer) bool {
@@ -306,44 +259,44 @@ func shouldUpdateOpenShiftServiceAccountIssuer(issuer *azworkloadidentityv1alpha
 }
 
 func (r *OIDCIssuerReconciler) setPublished(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer, published oidc.PublishedDocuments) error {
-	original := issuer.DeepCopy()
-	now := metav1.Now()
-	issuer.Status.IssuerURL = published.IssuerURL
-	issuer.Status.AzureResources = published.AzureResources
-	issuer.Status.ObservedGeneration = issuer.Generation
-	issuer.Status.LastReconciledTime = &now
-	return r.Status().Patch(ctx, issuer, client.MergeFrom(original))
+	return r.patchOIDCIssuerStatus(ctx, issuer, func(status *azworkloadidentityv1alpha1.OIDCIssuerStatus) {
+		status.IssuerURL = published.IssuerURL
+		status.AzureResources = published.AzureResources
+	})
 }
 
 func (r *OIDCIssuerReconciler) setReady(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer, published oidc.PublishedDocuments) error {
-	original := issuer.DeepCopy()
-	now := metav1.Now()
-	issuer.Status.IssuerURL = published.IssuerURL
-	issuer.Status.AzureResources = published.AzureResources
-	issuer.Status.ObservedGeneration = issuer.Generation
-	issuer.Status.LastReconciledTime = &now
-	apimeta.SetStatusCondition(&issuer.Status.Conditions, metav1.Condition{
-		Type:               string(azworkloadidentityv1alpha1.OIDCIssuerConditionReady),
-		Status:             metav1.ConditionTrue,
-		Reason:             "Published",
-		Message:            "OIDC issuer documents are published",
-		ObservedGeneration: issuer.Generation,
+	return r.patchOIDCIssuerStatus(ctx, issuer, func(status *azworkloadidentityv1alpha1.OIDCIssuerStatus) {
+		status.IssuerURL = published.IssuerURL
+		status.AzureResources = published.AzureResources
+		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               string(azworkloadidentityv1alpha1.OIDCIssuerConditionReady),
+			Status:             metav1.ConditionTrue,
+			Reason:             "Published",
+			Message:            "OIDC issuer documents are published",
+			ObservedGeneration: issuer.Generation,
+		})
 	})
-	return r.Status().Patch(ctx, issuer, client.MergeFrom(original))
 }
 
 func (r *OIDCIssuerReconciler) setNotReady(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer, reason, message string) error {
+	return r.patchOIDCIssuerStatus(ctx, issuer, func(status *azworkloadidentityv1alpha1.OIDCIssuerStatus) {
+		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               string(azworkloadidentityv1alpha1.OIDCIssuerConditionReady),
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: issuer.Generation,
+		})
+	})
+}
+
+func (r *OIDCIssuerReconciler) patchOIDCIssuerStatus(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer, mutate func(*azworkloadidentityv1alpha1.OIDCIssuerStatus)) error {
 	original := issuer.DeepCopy()
 	now := metav1.Now()
 	issuer.Status.ObservedGeneration = issuer.Generation
 	issuer.Status.LastReconciledTime = &now
-	apimeta.SetStatusCondition(&issuer.Status.Conditions, metav1.Condition{
-		Type:               string(azworkloadidentityv1alpha1.OIDCIssuerConditionReady),
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            message,
-		ObservedGeneration: issuer.Generation,
-	})
+	mutate(&issuer.Status)
 	return r.Status().Patch(ctx, issuer, client.MergeFrom(original))
 }
 

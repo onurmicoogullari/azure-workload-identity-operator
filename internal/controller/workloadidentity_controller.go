@@ -181,38 +181,41 @@ func (r *WorkloadIdentityReconciler) deleteServiceAccountIfOwned(ctx context.Con
 }
 
 func (r *WorkloadIdentityReconciler) setWorkloadIdentityReady(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, issuerURL, subject string, managed workloadidentity.ManagedIdentity) error {
-	original := identity.DeepCopy()
-	now := metav1.Now()
-	identity.Status.ClientID = managed.ClientID
-	identity.Status.PrincipalID = managed.PrincipalID
-	identity.Status.TenantID = managed.TenantID
-	identity.Status.IssuerURL = issuerURL
-	identity.Status.Subject = subject
-	identity.Status.AzureResources = managed.AzureResources
-	identity.Status.ObservedGeneration = identity.Generation
-	identity.Status.LastReconciledTime = &now
-	apimeta.SetStatusCondition(&identity.Status.Conditions, metav1.Condition{
-		Type:               string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
-		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciled",
-		Message:            "Workload identity is reconciled",
-		ObservedGeneration: identity.Generation,
+	return r.patchWorkloadIdentityStatus(ctx, identity, func(status *azworkloadidentityv1alpha1.WorkloadIdentityStatus) {
+		status.ClientID = managed.ClientID
+		status.PrincipalID = managed.PrincipalID
+		status.TenantID = managed.TenantID
+		status.IssuerURL = issuerURL
+		status.Subject = subject
+		status.AzureResources = managed.AzureResources
+		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
+			Status:             metav1.ConditionTrue,
+			Reason:             "Reconciled",
+			Message:            "Workload identity is reconciled",
+			ObservedGeneration: identity.Generation,
+		})
 	})
-	return r.Status().Patch(ctx, identity, client.MergeFrom(original))
 }
 
 func (r *WorkloadIdentityReconciler) setWorkloadIdentityNotReady(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, reason, message string) error {
+	return r.patchWorkloadIdentityStatus(ctx, identity, func(status *azworkloadidentityv1alpha1.WorkloadIdentityStatus) {
+		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: identity.Generation,
+		})
+	})
+}
+
+func (r *WorkloadIdentityReconciler) patchWorkloadIdentityStatus(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, mutate func(*azworkloadidentityv1alpha1.WorkloadIdentityStatus)) error {
 	original := identity.DeepCopy()
 	now := metav1.Now()
 	identity.Status.ObservedGeneration = identity.Generation
 	identity.Status.LastReconciledTime = &now
-	apimeta.SetStatusCondition(&identity.Status.Conditions, metav1.Condition{
-		Type:               string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
-		Status:             metav1.ConditionFalse,
-		Reason:             reason,
-		Message:            message,
-		ObservedGeneration: identity.Generation,
-	})
+	mutate(&identity.Status)
 	return r.Status().Patch(ctx, identity, client.MergeFrom(original))
 }
 

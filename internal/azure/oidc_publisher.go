@@ -2,9 +2,7 @@ package azure
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"maps"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
@@ -19,12 +17,7 @@ import (
 	"github.com/onurmicoogullari/az-workload-identity-operator/internal/signingkey"
 )
 
-const (
-	createdByOperatorTag    = "created-by-operator"
-	managedByTag            = "managed-by"
-	operatorCreatedTagValue = "true"
-	operatorName            = "az-workload-identity-operator"
-)
+const oidcIssuerUIDTag = "oidc-issuer-uid"
 
 type BlobOIDCDocumentPublisher struct {
 	Client     client.Client
@@ -332,38 +325,9 @@ func issuerURL(issuer *azworkloadidentityv1alpha1.OIDCIssuer) string {
 }
 
 func resourceTags(issuer *azworkloadidentityv1alpha1.OIDCIssuer, createdByOperator bool) map[string]*string {
-	return map[string]*string{
-		managedByTag:         to.Ptr(operatorName),
-		"oidc-issuer-uid":    to.Ptr(string(issuer.UID)),
-		createdByOperatorTag: to.Ptr(fmt.Sprintf("%t", createdByOperator)),
-		"operator-api-group": to.Ptr("workloadidentity.azure.micosolutions.se"),
-	}
-}
-
-func mergeTags(existing, desired map[string]*string) map[string]*string {
-	merged := make(map[string]*string, len(existing)+len(desired))
-	maps.Copy(merged, existing)
-	maps.Copy(merged, desired)
-	return merged
-}
-
-func hasTags(existing, desired map[string]*string) bool {
-	for key, value := range desired {
-		if existing[key] == nil || value == nil || *existing[key] != *value {
-			return false
-		}
-	}
-	return true
+	return operatorOwnershipTags(oidcIssuerUIDTag, string(issuer.UID), createdByOperator)
 }
 
 func wasCreatedByOperator(existing map[string]*string, issuer *azworkloadidentityv1alpha1.OIDCIssuer) bool {
-	if existing == nil || existing[createdByOperatorTag] == nil || *existing[createdByOperatorTag] != operatorCreatedTagValue {
-		return false
-	}
-	return hasTags(existing, resourceTags(issuer, true))
-}
-
-func isNotFound(err error) bool {
-	var responseErr *azcore.ResponseError
-	return errors.As(err, &responseErr) && responseErr.StatusCode == 404
+	return wasOperatorCreatedResource(existing, resourceTags(issuer, true))
 }

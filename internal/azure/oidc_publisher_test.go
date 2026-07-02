@@ -31,6 +31,9 @@ func TestResourceTags(t *testing.T) {
 	if *tags[createdByOperatorTag] != operatorCreatedTagValue {
 		t.Fatalf("created-by-operator tag = %q", *tags[createdByOperatorTag])
 	}
+	if *tags[operatorAPIGroupTag] != operatorAPIGroupValue {
+		t.Fatalf("operator-api-group tag = %q", *tags[operatorAPIGroupTag])
+	}
 }
 
 func TestMergeTagsPreservesExistingTags(t *testing.T) {
