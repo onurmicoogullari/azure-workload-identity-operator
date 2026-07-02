@@ -14,6 +14,7 @@ import (
 )
 
 const azureADTokenExchangeAudience = "api://AzureADTokenExchange"
+const workloadIdentityUIDTag = "workload-identity-uid"
 
 type WorkloadIdentityManager struct {
 	Credential azcore.TokenCredential
@@ -227,19 +228,11 @@ func (c *identityClients) deleteResourceGroupIfOwned(ctx context.Context, identi
 }
 
 func workloadIdentityTags(identity *azworkloadidentityv1alpha1.WorkloadIdentity, createdByOperator bool) map[string]*string {
-	return map[string]*string{
-		managedByTag:            to.Ptr(operatorName),
-		"workload-identity-uid": to.Ptr(string(identity.UID)),
-		createdByOperatorTag:    to.Ptr(fmt.Sprintf("%t", createdByOperator)),
-		"operator-api-group":    to.Ptr("workloadidentity.azure.micosolutions.se"),
-	}
+	return operatorOwnershipTags(workloadIdentityUIDTag, string(identity.UID), createdByOperator)
 }
 
 func wasWorkloadIdentityCreatedByOperator(existing map[string]*string, identity *azworkloadidentityv1alpha1.WorkloadIdentity) bool {
-	if existing == nil || existing[createdByOperatorTag] == nil || *existing[createdByOperatorTag] != operatorCreatedTagValue {
-		return false
-	}
-	return hasTags(existing, workloadIdentityTags(identity, true))
+	return wasOperatorCreatedResource(existing, workloadIdentityTags(identity, true))
 }
 
 func value(s *string) string {
