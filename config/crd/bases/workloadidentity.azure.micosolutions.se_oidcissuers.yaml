@@ -233,6 +233,11 @@ spec:
                   by the controller.
                 format: int64
                 type: integer
+              previousServiceAccountIssuer:
+                description: |-
+                  previousServiceAccountIssuer is the OpenShift Authentication.spec.serviceAccountIssuer value
+                  captured before this OIDCIssuer updated it. A present empty string means the previous value was empty.
+                type: string
             type: object
         required:
         - spec

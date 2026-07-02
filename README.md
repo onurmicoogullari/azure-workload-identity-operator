@@ -1,5 +1,16 @@
 # az-workload-identity-operator
 
+## Deploy
+
+The default Kustomize deployment enables the OIDCIssuer validating webhook.
+Install cert-manager in the target cluster before deploying this operator so
+the webhook serving certificate can be issued and the
+`ValidatingWebhookConfiguration` CA bundle can be injected.
+
+```bash
+make deploy IMG=<registry>/<image>:<tag>
+```
+
 ## E2E Tests
 
 The local OpenShift/CRC e2e test lives in `e2e/openshift/`.

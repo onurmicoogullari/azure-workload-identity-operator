@@ -32,6 +32,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -41,13 +42,22 @@ import (
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
 	"github.com/onurmicoogullari/az-workload-identity-operator/internal/azure"
 	"github.com/onurmicoogullari/az-workload-identity-operator/internal/controller"
+	kubernetesclient "github.com/onurmicoogullari/az-workload-identity-operator/internal/kubernetes"
 	"github.com/onurmicoogullari/az-workload-identity-operator/internal/openshift"
+	webhookv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+)
+
+const (
+	enableWebhooksEnvVar          = "ENABLE_WEBHOOKS"
+	podNamespaceEnvVar            = "POD_NAMESPACE"
+	serviceAccountNameEnvVar      = "SERVICE_ACCOUNT_NAME"
+	serviceAccountTokenExpiration = int64(600)
 )
 
 func init() {
@@ -193,6 +203,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	openShiftServiceAccountIssuer, webhookOpenShiftServiceAccountIssuer, err := openShiftServiceAccountIssuerClients(mgr)
+	if err != nil {
+		setupLog.Error(err, "Failed to discover OpenShift Authentication API")
+		os.Exit(1)
+	}
+	serviceAccountTokenReader := serviceAccountTokenClient(mgr.GetClient())
+	var serviceAccountTokens controller.ServiceAccountTokenClient
+	if serviceAccountTokenReader != nil {
+		serviceAccountTokens = serviceAccountTokenReader
+	}
+
 	if err := (&controller.OIDCIssuerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -200,8 +221,9 @@ func main() {
 			Client:     mgr.GetClient(),
 			Credential: azureCredential,
 		},
-		ServiceAccountIssuerUpdater: &openshift.ServiceAccountIssuerUpdater{Client: mgr.GetClient()},
-		SigningKeyRefreshInterval:   signingKeyRefreshInterval,
+		OpenShiftServiceAccountIssuer: openShiftServiceAccountIssuer,
+		ServiceAccountTokens:          serviceAccountTokens,
+		SigningKeyRefreshInterval:     signingKeyRefreshInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "oidcissuer")
 		os.Exit(1)
@@ -215,6 +237,22 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentity")
 		os.Exit(1)
+	}
+	if os.Getenv(enableWebhooksEnvVar) != "false" {
+		var err error
+		if serviceAccountTokenReader == nil {
+			err = webhookv1alpha1.SetupOIDCIssuerWebhookWithManager(mgr, webhookOpenShiftServiceAccountIssuer, nil)
+		} else {
+			err = webhookv1alpha1.SetupOIDCIssuerWebhookWithManager(
+				mgr,
+				webhookOpenShiftServiceAccountIssuer,
+				serviceAccountTokenReader,
+			)
+		}
+		if err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "OIDCIssuer")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 
@@ -231,5 +269,41 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
+	}
+}
+
+func openShiftServiceAccountIssuerClients(
+	mgr ctrl.Manager,
+) (*openshift.ServiceAccountIssuerClient, *openshift.ServiceAccountIssuerReader, error) {
+	available, err := openshift.AuthenticationAPIAvailable(mgr.GetRESTMapper())
+	if err != nil {
+		return nil, nil, err
+	}
+	if !available {
+		setupLog.Info("OpenShift Authentication API not found; skipping OpenShift service account issuer integration")
+		return nil, nil, nil
+	}
+
+	setupLog.Info("OpenShift Authentication API found; enabling OpenShift service account issuer integration")
+	return &openshift.ServiceAccountIssuerClient{Client: mgr.GetClient()},
+		&openshift.ServiceAccountIssuerReader{Reader: mgr.GetAPIReader()},
+		nil
+}
+
+func serviceAccountTokenClient(kubeClient client.Client) *kubernetesclient.ServiceAccountTokenClient {
+	namespace := os.Getenv(podNamespaceEnvVar)
+	name := os.Getenv(serviceAccountNameEnvVar)
+	if namespace == "" || name == "" {
+		setupLog.Info("Pod service account identity not found; skipping cluster service account issuer deletion guard",
+			"namespaceEnvVar", podNamespaceEnvVar,
+			"serviceAccountNameEnvVar", serviceAccountNameEnvVar)
+		return nil
+	}
+
+	return &kubernetesclient.ServiceAccountTokenClient{
+		Client:             kubeClient,
+		Namespace:          namespace,
+		ServiceAccountName: name,
+		ExpirationSeconds:  serviceAccountTokenExpiration,
 	}
 }

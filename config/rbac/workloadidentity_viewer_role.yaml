@@ -1,7 +1,7 @@
 # This rule is not used by the project az-workload-identity-operator itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants read-only access to workloadidentity.workloadidentity.azure.micosolutions.se resources.
+# Grants read-only access to workloadidentity.azure.micosolutions.se resources.
 # This role is intended for users who need visibility into these resources
 # without permissions to modify them. It is ideal for monitoring purposes and limited-access viewing.
 
@@ -14,7 +14,7 @@ metadata:
   name: workloadidentity-viewer-role
 rules:
 - apiGroups:
-  - workloadidentity.workloadidentity.azure.micosolutions.se
+  - workloadidentity.azure.micosolutions.se
   resources:
   - workloadidentities
   verbs:
@@ -22,7 +22,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - workloadidentity.workloadidentity.azure.micosolutions.se
+  - workloadidentity.azure.micosolutions.se
   resources:
   - workloadidentities/status
   verbs:

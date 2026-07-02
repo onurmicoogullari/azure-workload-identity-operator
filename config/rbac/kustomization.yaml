@@ -7,6 +7,8 @@ resources:
 - service_account.yaml
 - role.yaml
 - role_binding.yaml
+- service_account_token_role.yaml
+- service_account_token_role_binding.yaml
 - leader_election_role.yaml
 - leader_election_role_binding.yaml
 # The following RBAC configurations are used to protect
@@ -29,3 +31,5 @@ resources:
 - oidcissuer_editor_role.yaml
 - oidcissuer_viewer_role.yaml
 
+configurations:
+- kustomizeconfig.yaml
