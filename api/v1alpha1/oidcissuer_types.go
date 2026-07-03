@@ -77,10 +77,14 @@ type AzureOIDCIssuerConfig struct {
 
 	// resourceGroupName is the Azure resource group containing issuer storage.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=90
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_().-]*[A-Za-z0-9_()-]$`
 	// +required
 	ResourceGroupName string `json:"resourceGroupName"`
 
 	// storageAccountName is the Azure Storage account that serves OIDC discovery documents.
+	// +kubebuilder:validation:MinLength=3
+	// +kubebuilder:validation:MaxLength=24
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]{3,24}$`
 	// +required
 	StorageAccountName string `json:"storageAccountName"`
@@ -89,6 +93,7 @@ type AzureOIDCIssuerConfig struct {
 	// +kubebuilder:default=oidc
 	// +kubebuilder:validation:MinLength=3
 	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9]|-[a-z0-9])+$`
 	// +required
 	BlobContainerName string `json:"blobContainerName"`
 }

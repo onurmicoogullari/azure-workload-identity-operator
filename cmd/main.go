@@ -253,6 +253,10 @@ func main() {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "OIDCIssuer")
 			os.Exit(1)
 		}
+		if err := webhookv1alpha1.SetupWorkloadIdentityWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "WorkloadIdentity")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

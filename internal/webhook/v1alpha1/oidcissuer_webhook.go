@@ -19,9 +19,11 @@ package v1alpha1
 import (
 	"context"
 	"errors"
+	"reflect"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -49,7 +51,7 @@ func SetupOIDCIssuerWebhookWithManager(mgr ctrl.Manager, openShiftServiceAccount
 }
 
 // NOTE: If you want to customise the 'path', use the flags '--defaulting-path' or '--validation-path'.
-// +kubebuilder:webhook:path=/validate-workloadidentity-azure-micosolutions-se-v1alpha1-oidcissuer,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloadidentity.azure.micosolutions.se,resources=oidcissuers,verbs=delete,versions=v1alpha1,name=voidcissuer-v1alpha1.workloadidentity.azure.micosolutions.se,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-workloadidentity-azure-micosolutions-se-v1alpha1-oidcissuer,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloadidentity.azure.micosolutions.se,resources=oidcissuers,verbs=create;update;delete,versions=v1alpha1,name=voidcissuer-v1alpha1.workloadidentity.azure.micosolutions.se,admissionReviewVersions=v1
 
 // OIDCIssuerValidator validates OIDCIssuer admission requests.
 //
@@ -64,12 +66,25 @@ type OIDCIssuerValidator struct {
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type OIDCIssuer.
 func (v *OIDCIssuerValidator) ValidateCreate(_ context.Context, obj *workloadidentityv1alpha1.OIDCIssuer) (admission.Warnings, error) {
 	oidcIssuerLog.Info("Validation for OIDCIssuer upon creation", "name", obj.GetName())
+	allErrs := validateOIDCIssuerName(obj)
+	allErrs = append(allErrs, validateOIDCIssuerSigningKey(obj.Spec.SigningKey)...)
+	if len(allErrs) > 0 {
+		return nil, invalidOIDCIssuer(obj.GetName(), allErrs)
+	}
 	return nil, nil
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type OIDCIssuer.
 func (v *OIDCIssuerValidator) ValidateUpdate(_ context.Context, oldObj, newObj *workloadidentityv1alpha1.OIDCIssuer) (admission.Warnings, error) {
 	oidcIssuerLog.Info("Validation for OIDCIssuer upon update", "name", newObj.GetName())
+	allErrs := validateOIDCIssuerName(newObj)
+	allErrs = append(allErrs, validateOIDCIssuerSigningKey(newObj.Spec.SigningKey)...)
+	if !reflect.DeepEqual(oldObj.Spec.Azure, newObj.Spec.Azure) {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "azure"), "field is immutable"))
+	}
+	if len(allErrs) > 0 {
+		return nil, invalidOIDCIssuer(newObj.GetName(), allErrs)
+	}
 	return nil, nil
 }
 
@@ -122,4 +137,36 @@ func forbiddenOIDCIssuerDeletion(name, message string) error {
 		Group:    workloadidentityv1alpha1.GroupVersion.Group,
 		Resource: "oidcissuers",
 	}, name, errors.New(message))
+}
+
+func validateOIDCIssuerName(obj *workloadidentityv1alpha1.OIDCIssuer) field.ErrorList {
+	if obj.GetName() == workloadidentityv1alpha1.OIDCIssuerName {
+		return nil
+	}
+	return field.ErrorList{
+		field.Invalid(field.NewPath("metadata", "name"), obj.GetName(), `must be "default"`),
+	}
+}
+
+func validateOIDCIssuerSigningKey(signingKey workloadidentityv1alpha1.SigningKeySource) field.ErrorList {
+	if signingKey.RetiringSecretRef == nil {
+		return nil
+	}
+	if signingKey.SecretRef == *signingKey.RetiringSecretRef {
+		return field.ErrorList{
+			field.Invalid(
+				field.NewPath("spec", "signingKey", "retiringSecretRef"),
+				signingKey.RetiringSecretRef,
+				"must not reference the active signing key",
+			),
+		}
+	}
+	return nil
+}
+
+func invalidOIDCIssuer(name string, errs field.ErrorList) error {
+	return apierrors.NewInvalid(schema.GroupKind{
+		Group: workloadidentityv1alpha1.GroupVersion.Group,
+		Kind:  "OIDCIssuer",
+	}, name, errs)
 }

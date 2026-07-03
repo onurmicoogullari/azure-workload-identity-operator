@@ -56,7 +56,9 @@ spec:
                   federatedIdentityCredentialName:
                     description: federatedIdentityCredentialName is the Azure federated
                       identity credential name.
+                    maxLength: 120
                     minLength: 1
+                    pattern: ^[A-Za-z0-9][A-Za-z0-9_-]*$
                     type: string
                   location:
                     description: location is the Azure region for identity resources.
@@ -65,7 +67,9 @@ spec:
                   resourceGroupName:
                     description: resourceGroupName is the Azure resource group containing
                       the managed identity.
+                    maxLength: 90
                     minLength: 1
+                    pattern: ^[A-Za-z0-9_().-]*[A-Za-z0-9_()-]$
                     type: string
                   subscriptionID:
                     description: subscriptionID is the Azure subscription UUID containing
@@ -75,7 +79,9 @@ spec:
                   userAssignedIdentityName:
                     description: userAssignedIdentityName is the Azure User Assigned
                       Managed Identity name.
-                    minLength: 1
+                    maxLength: 128
+                    minLength: 3
+                    pattern: ^[A-Za-z0-9][A-Za-z0-9_-]*$
                     type: string
                 required:
                 - federatedIdentityCredentialName
@@ -98,7 +104,9 @@ spec:
                 properties:
                   name:
                     description: name is the ServiceAccount name.
+                    maxLength: 253
                     minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
                     type: string
                 required:
                 - name

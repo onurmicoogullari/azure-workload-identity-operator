@@ -19,7 +19,29 @@ webhooks:
     apiVersions:
     - v1alpha1
     operations:
+    - CREATE
+    - UPDATE
     - DELETE
     resources:
     - oidcissuers
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-workloadidentity-azure-micosolutions-se-v1alpha1-workloadidentity
+  failurePolicy: Fail
+  name: vworkloadidentity-v1alpha1.workloadidentity.azure.micosolutions.se
+  rules:
+  - apiGroups:
+    - workloadidentity.azure.micosolutions.se
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - workloadidentities
   sideEffects: None
