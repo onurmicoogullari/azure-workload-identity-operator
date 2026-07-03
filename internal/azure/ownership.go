@@ -50,6 +50,19 @@ func wasOperatorCreatedResource(existing, createdTags map[string]*string) bool {
 	return hasTags(existing, createdTags)
 }
 
+func isOperatorResourceOwnedByDifferentWorkloadIdentity(existing map[string]*string, uid string) bool {
+	if existing == nil {
+		return false
+	}
+	if existing[managedByTag] == nil || *existing[managedByTag] != operatorName {
+		return false
+	}
+	if existing[operatorAPIGroupTag] == nil || *existing[operatorAPIGroupTag] != operatorAPIGroupValue {
+		return false
+	}
+	return existing[workloadIdentityUIDTag] != nil && *existing[workloadIdentityUIDTag] != uid
+}
+
 func isNotFound(err error) bool {
 	var responseErr *azcore.ResponseError
 	return errors.As(err, &responseErr) && responseErr.StatusCode == 404

@@ -63,6 +63,7 @@ Optional env:
   OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER     default: true
   OIDC_ISSUER_DELETION_POLICY                 default: Delete
   WORKLOAD_IDENTITY_DELETION_POLICY           default: Delete
+  VERIFY_WORKLOAD_IDENTITY_CONFLICTS          default: true
   IMAGE_NAME                                  default: azwi-crc-test
   JOB_NAME                                    default: azwi-crc-test
   WAIT_TIMEOUT                                default: 10m
@@ -252,6 +253,7 @@ RETIRING_SIGNING_KEY_SECRET_KEY=${RETIRING_SIGNING_KEY_SECRET_KEY:-service-accou
 OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER=${OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER:-true}
 OIDC_ISSUER_DELETION_POLICY=${OIDC_ISSUER_DELETION_POLICY:-Delete}
 WORKLOAD_IDENTITY_DELETION_POLICY=${WORKLOAD_IDENTITY_DELETION_POLICY:-Delete}
+verify_workload_identity_conflicts=${VERIFY_WORKLOAD_IDENTITY_CONFLICTS:-true}
 IMAGE_NAME=${IMAGE_NAME:-azwi-crc-test}
 JOB_NAME=${JOB_NAME:-azwi-crc-test}
 KEY_VAULT_READ_TIMEOUT_SECONDS=${KEY_VAULT_READ_TIMEOUT_SECONDS:-300}
@@ -308,6 +310,9 @@ applied_oidc_issuer=false
 applied_workload_identity=false
 created_buildconfig=false
 applied_job=false
+applied_conflict_workload_identity=false
+applied_federated_credential_conflict_workload_identity=false
+created_conflict_service_account=false
 oidc_deleted=false
 workload_identity_deleted=false
 original_openshift_service_account_issuer=""
@@ -328,6 +333,24 @@ cleanup_job() {
   if [[ $applied_job == "true" ]]; then
     kubectl delete job "$JOB_NAME" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
     kubectl wait --for=delete "job/$JOB_NAME" -n "$NAMESPACE" --timeout="$wait_timeout" >/dev/null || return 1
+  fi
+}
+
+cleanup_conflict_workload_identity() {
+  if [[ $applied_conflict_workload_identity == "true" ]]; then
+    kubectl delete workloadidentity azwi-sa-conflict -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
+    kubectl wait --for=delete workloadidentity/azwi-sa-conflict -n "$NAMESPACE" --timeout="$wait_timeout" >/dev/null || return 1
+  fi
+  if [[ $applied_federated_credential_conflict_workload_identity == "true" ]]; then
+    kubectl delete workloadidentity azwi-fic-conflict -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
+    kubectl wait --for=delete workloadidentity/azwi-fic-conflict -n "$NAMESPACE" --timeout="$wait_timeout" >/dev/null || return 1
+  fi
+}
+
+cleanup_conflict_service_account() {
+  if [[ $created_conflict_service_account == "true" ]]; then
+    kubectl delete serviceaccount azwi-sa-conflict -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
+    kubectl wait --for=delete serviceaccount/azwi-sa-conflict -n "$NAMESPACE" --timeout="$wait_timeout" >/dev/null || return 1
   fi
 }
 
@@ -577,6 +600,8 @@ cleanup() {
   log CLEANUP "Cleaning up e2e resources"
 
   cleanup_step "delete Job" cleanup_job
+  cleanup_step "delete conflict WorkloadIdentity CR" cleanup_conflict_workload_identity
+  cleanup_step "delete conflict ServiceAccount" cleanup_conflict_service_account
   cleanup_step "delete WorkloadIdentity CR" cleanup_workload_identity
   cleanup_step "verify WorkloadIdentity Azure cleanup" verify_workload_identity_resource_group_cleanup
   cleanup_step "delete OIDCIssuer CR" cleanup_oidc_issuer "$verify_openshift_handoff_guard"
@@ -1596,6 +1621,95 @@ assert_local_oidcissuer_delete_webhook_handler_rejects_openshift_service_account
   return 1
 }
 
+wait_for_workloadidentity_ready_false_reason() {
+  local name=$1
+  local reason=$2
+  local timeout=$3
+  local deadline
+  local condition
+  deadline=$((SECONDS + $(duration_seconds "$timeout")))
+
+  log WATCH "Waiting for WorkloadIdentity/$name Ready=False reason $reason"
+  while ((SECONDS < deadline)); do
+    condition=$(kubectl get workloadidentity "$name" -n "$NAMESPACE" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{"|"}{.reason}{"\n"}{end}' 2>/dev/null || true)
+    if [[ $condition == *"False|$reason"* ]]; then
+      log VERIFY "WorkloadIdentity/$name reported Ready=False reason $reason"
+      return
+    fi
+    sleep 5
+  done
+
+  log ERROR "Timed out waiting for WorkloadIdentity/$name Ready=False reason $reason"
+  kubectl get workloadidentity "$name" -n "$NAMESPACE" -o yaml >&2 || true
+  return 1
+}
+
+verify_workload_identity_conflict_reconciliation() {
+  local conflict_name=azwi-sa-conflict
+  local conflict_service_account=azwi-sa-conflict
+  local federated_credential_conflict_name=azwi-fic-conflict
+  local federated_credential_conflict_service_account=azwi-fic-conflict
+
+  if [[ $verify_workload_identity_conflicts != "true" ]]; then
+    return
+  fi
+
+  log VERIFY "Verifying WorkloadIdentity reconciliation reports ServiceAccount ownership conflicts"
+  kubectl create serviceaccount "$conflict_service_account" -n "$NAMESPACE" >/dev/null
+  created_conflict_service_account=true
+  kubectl label serviceaccount "$conflict_service_account" -n "$NAMESPACE" \
+    azure.workload.identity/use=true \
+    workloadidentity.azure.micosolutions.se/managed-by=az-workload-identity-operator \
+    workloadidentity.azure.micosolutions.se/workload-identity-uid=foreign-workload-identity-uid \
+    workloadidentity.azure.micosolutions.se/created-by-operator=false >/dev/null
+
+  cat <<EOF | kubectl apply -f - >/dev/null
+apiVersion: workloadidentity.azure.micosolutions.se/v1alpha1
+kind: WorkloadIdentity
+metadata:
+  name: $conflict_name
+  namespace: $NAMESPACE
+spec:
+  azure:
+    subscriptionID: $AZURE_SUBSCRIPTION_ID
+    location: $AZURE_LOCATION
+    resourceGroupName: $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME
+    userAssignedIdentityName: $AZURE_USER_ASSIGNED_IDENTITY_NAME
+    federatedIdentityCredentialName: fidc-conflict-safe-reconcile
+  serviceAccount:
+    name: $conflict_service_account
+  deletionPolicy: Retain
+EOF
+  applied_conflict_workload_identity=true
+  wait_for_workloadidentity_ready_false_reason "$conflict_name" ServiceAccountConflict "$wait_timeout" || return 1
+
+  if [[ $run_operator_locally != "true" ]]; then
+    log SKIP "Skipping Azure federated credential conflict check because Kubernetes admission may reject the duplicate tuple before reconciliation"
+    return
+  fi
+
+  log VERIFY "Verifying WorkloadIdentity reconciliation reports Azure federated credential conflicts"
+  cat <<EOF | kubectl apply -f - >/dev/null
+apiVersion: workloadidentity.azure.micosolutions.se/v1alpha1
+kind: WorkloadIdentity
+metadata:
+  name: $federated_credential_conflict_name
+  namespace: $NAMESPACE
+spec:
+  azure:
+    subscriptionID: $AZURE_SUBSCRIPTION_ID
+    location: $AZURE_LOCATION
+    resourceGroupName: $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME
+    userAssignedIdentityName: $AZURE_USER_ASSIGNED_IDENTITY_NAME
+    federatedIdentityCredentialName: $AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME
+  serviceAccount:
+    name: $federated_credential_conflict_service_account
+  deletionPolicy: Retain
+EOF
+  applied_federated_credential_conflict_workload_identity=true
+  wait_for_workloadidentity_ready_false_reason "$federated_credential_conflict_name" FederatedIdentityCredentialConflict "$wait_timeout" || return 1
+}
+
 render() {
   local file=$1
   local content
@@ -1663,6 +1777,7 @@ render "$script_dir/workload-identity.yaml" | kubectl apply -f -
 applied_workload_identity=true
 log WATCH "Waiting for WorkloadIdentity/$WORKLOAD_IDENTITY_NAME to become Ready"
 kubectl wait --for=condition=Ready "workloadidentity/$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" --timeout="$wait_timeout"
+verify_workload_identity_conflict_reconciliation
 
 if [[ -z $vault_id ]]; then
   if ! vault_id=$(az keyvault show -n "$KEY_VAULT_NAME" --query id -o tsv 2>/dev/null); then

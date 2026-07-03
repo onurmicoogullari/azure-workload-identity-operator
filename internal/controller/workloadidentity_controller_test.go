@@ -37,6 +37,7 @@ import (
 const (
 	testWorkloadIdentityIssuerURL = "https://oidctest123.blob.core.windows.net/oidc"
 	testWorkloadNamespace         = "default"
+	testClientID                  = "client-id"
 )
 
 type fakeWorkloadIdentityManager struct {
@@ -86,7 +87,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{
-				ClientID:    "client-id",
+				ClientID:    testClientID,
 				PrincipalID: "principal-id",
 				TenantID:    "tenant-id",
 				AzureResources: []workloadidentityv1alpha1.AzureResource{{
@@ -106,12 +107,12 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Get(ctx, serviceAccountKey, serviceAccount)).To(Succeed())
 			Expect(serviceAccount.Labels[serviceAccountUseLabel]).To(Equal(trueValue))
 			Expect(serviceAccount.Labels[serviceAccountCreatedBy]).To(Equal(trueValue))
-			Expect(serviceAccount.Annotations[serviceAccountClientID]).To(Equal("client-id"))
+			Expect(serviceAccount.Annotations[serviceAccountClientID]).To(Equal(testClientID))
 			Expect(serviceAccount.Annotations[serviceAccountTenantID]).To(Equal("tenant-id"))
 
 			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
 			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
-			Expect(updated.Status.ClientID).To(Equal("client-id"))
+			Expect(updated.Status.ClientID).To(Equal(testClientID))
 			Expect(updated.Status.Subject).To(Equal("system:serviceaccount:default:test-sa"))
 			condition := apimeta.FindStatusCondition(updated.Status.Conditions, string(workloadidentityv1alpha1.WorkloadIdentityConditionReady))
 			Expect(condition).NotTo(BeNil())
@@ -128,7 +129,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 				Labels:    map[string]string{"existing": "true"},
 			}})).To(Succeed())
 
-			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: "client-id"}}
+			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
 			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
@@ -138,7 +139,89 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(serviceAccount.Labels["existing"]).To(Equal(trueValue))
 			Expect(serviceAccount.Labels[serviceAccountUseLabel]).To(Equal(trueValue))
 			Expect(serviceAccount.Labels[serviceAccountCreatedBy]).To(Equal("false"))
-			Expect(serviceAccount.Annotations[serviceAccountClientID]).To(Equal("client-id"))
+			Expect(serviceAccount.Annotations[serviceAccountClientID]).To(Equal(testClientID))
+		})
+
+		It("marks not ready when the ServiceAccount is owned by another WorkloadIdentity", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Labels: map[string]string{
+					serviceAccountManagedBy: serviceAccountManagerName,
+					serviceAccountUID:       "other-workload-identity-uid",
+				},
+			}})).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).To(MatchError(ContainSubstring("already managed by another WorkloadIdentity")))
+			Expect(manager.ensures).To(Equal(0))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			condition := apimeta.FindStatusCondition(updated.Status.Conditions, string(workloadidentityv1alpha1.WorkloadIdentityConditionReady))
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal("ServiceAccountConflict"))
+		})
+
+		It("does not overwrite an adopted ServiceAccount annotated for another Azure identity", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Annotations: map[string]string{
+					serviceAccountClientID: "other-client-id",
+				},
+			}})).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).To(MatchError(ContainSubstring("already annotated for Azure client ID")))
+			Expect(manager.ensures).To(Equal(0))
+
+			serviceAccount := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, serviceAccount)).To(Succeed())
+			Expect(serviceAccount.Labels).NotTo(HaveKey(serviceAccountUID))
+			Expect(serviceAccount.Annotations[serviceAccountClientID]).To(Equal("other-client-id"))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			condition := apimeta.FindStatusCondition(updated.Status.Conditions, string(workloadidentityv1alpha1.WorkloadIdentityConditionReady))
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal("ServiceAccountConflict"))
+		})
+
+		It("maps Azure conflict errors to stable status reasons", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{
+				err: workloadidentity.NewConflictError(
+					workloadidentity.ReasonFederatedIdentityCredentialConflict,
+					"federated identity credential conflicts with an existing trust tuple",
+				),
+			}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).To(MatchError(ContainSubstring("federated identity credential conflicts")))
+			Expect(manager.ensures).To(Equal(1))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			condition := apimeta.FindStatusCondition(updated.Status.Conditions, string(workloadidentityv1alpha1.WorkloadIdentityConditionReady))
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(workloadidentity.ReasonFederatedIdentityCredentialConflict))
 		})
 
 		It("waits when the OIDCIssuer is not ready", func() {
