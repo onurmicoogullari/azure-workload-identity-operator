@@ -59,7 +59,7 @@ type fakeOpenShiftServiceAccountIssuer struct {
 	calls         *[]string
 }
 
-type fakeServiceAccountTokenClient struct {
+type fakeServiceAccountTokenIssuerReader struct {
 	currentIssuer string
 	err           error
 	gets          int
@@ -70,7 +70,7 @@ func (f *fakeOpenShiftServiceAccountIssuer) Get(context.Context) (string, error)
 	return f.currentIssuer, nil
 }
 
-func (f *fakeServiceAccountTokenClient) CurrentIssuer(context.Context) (string, error) {
+func (f *fakeServiceAccountTokenIssuerReader) CurrentIssuer(context.Context) (string, error) {
 	f.gets++
 	return f.currentIssuer, f.err
 }
@@ -348,7 +348,7 @@ var _ = Describe("OIDCIssuer Controller", func() {
 		It("blocks deletion while the cluster still mints service account tokens with the issuer URL", func() {
 			calls := []string{}
 			publisher := &fakeOIDCDocumentPublisher{calls: &calls}
-			serviceAccountTokens := &fakeServiceAccountTokenClient{currentIssuer: testIssuerURL}
+			serviceAccountTokens := &fakeServiceAccountTokenIssuerReader{currentIssuer: testIssuerURL}
 			createDeletingOIDCIssuer(ctx, typeNamespacedName, nil)
 
 			controllerReconciler := newOIDCIssuerReconcilerWithTokenClient(publisher, nil, serviceAccountTokens)
@@ -397,7 +397,7 @@ var _ = Describe("OIDCIssuer Controller", func() {
 		It("deletes published documents after the cluster service account token issuer is handed off", func() {
 			calls := []string{}
 			publisher := &fakeOIDCDocumentPublisher{calls: &calls}
-			serviceAccountTokens := &fakeServiceAccountTokenClient{currentIssuer: testPreviousIssuerURL}
+			serviceAccountTokens := &fakeServiceAccountTokenIssuerReader{currentIssuer: testPreviousIssuerURL}
 			createDeletingOIDCIssuer(ctx, typeNamespacedName, nil)
 
 			controllerReconciler := newOIDCIssuerReconcilerWithTokenClient(publisher, nil, serviceAccountTokens)
@@ -412,7 +412,7 @@ var _ = Describe("OIDCIssuer Controller", func() {
 		It("keeps the finalizer when the cluster service account token issuer cannot be verified", func() {
 			calls := []string{}
 			publisher := &fakeOIDCDocumentPublisher{calls: &calls}
-			serviceAccountTokens := &fakeServiceAccountTokenClient{err: fmt.Errorf("token request forbidden")}
+			serviceAccountTokens := &fakeServiceAccountTokenIssuerReader{err: fmt.Errorf("token request forbidden")}
 			createDeletingOIDCIssuer(ctx, typeNamespacedName, nil)
 
 			controllerReconciler := newOIDCIssuerReconcilerWithTokenClient(publisher, nil, serviceAccountTokens)
@@ -568,11 +568,11 @@ var _ = Describe("OIDCIssuer Controller", func() {
 	})
 })
 
-func newOIDCIssuerReconciler(publisher oidc.Publisher, openShiftServiceAccountIssuer OpenShiftServiceAccountIssuerClient) *OIDCIssuerReconciler {
+func newOIDCIssuerReconciler(publisher oidc.Publisher, openShiftServiceAccountIssuer OpenShiftServiceAccountIssuerManager) *OIDCIssuerReconciler {
 	return newOIDCIssuerReconcilerWithTokenClient(publisher, openShiftServiceAccountIssuer, nil)
 }
 
-func newOIDCIssuerReconcilerWithTokenClient(publisher oidc.Publisher, openShiftServiceAccountIssuer OpenShiftServiceAccountIssuerClient, serviceAccountTokens ServiceAccountTokenClient) *OIDCIssuerReconciler {
+func newOIDCIssuerReconcilerWithTokenClient(publisher oidc.Publisher, openShiftServiceAccountIssuer OpenShiftServiceAccountIssuerManager, serviceAccountTokens ServiceAccountTokenClient) *OIDCIssuerReconciler {
 	return &OIDCIssuerReconciler{
 		Client:                        k8sClient,
 		Scheme:                        k8sClient.Scheme(),

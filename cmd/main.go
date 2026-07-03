@@ -208,7 +208,7 @@ func main() {
 		setupLog.Error(err, "Failed to discover OpenShift Authentication API")
 		os.Exit(1)
 	}
-	serviceAccountTokenReader := serviceAccountTokenClient(mgr.GetClient())
+	serviceAccountTokenReader := newServiceAccountTokenClient(mgr.GetClient())
 	var serviceAccountTokens controller.ServiceAccountTokenClient
 	if serviceAccountTokenReader != nil {
 		serviceAccountTokens = serviceAccountTokenReader
@@ -290,7 +290,7 @@ func openShiftServiceAccountIssuerClients(
 		nil
 }
 
-func serviceAccountTokenClient(kubeClient client.Client) *kubernetesclient.ServiceAccountTokenClient {
+func newServiceAccountTokenClient(kubeClient client.Client) *kubernetesclient.ServiceAccountTokenClient {
 	namespace := os.Getenv(podNamespaceEnvVar)
 	name := os.Getenv(serviceAccountNameEnvVar)
 	if namespace == "" || name == "" {

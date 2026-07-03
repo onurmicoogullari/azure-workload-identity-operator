@@ -12,12 +12,12 @@ import (
 )
 
 const (
-	authenticationName               = "cluster"
-	defaultRolloutPollInterval       = 15 * time.Second
-	defaultServiceAccountWaitTimeout = 20 * time.Minute
+	authenticationName         = "cluster"
+	defaultRolloutPollInterval = 15 * time.Second
+	defaultRolloutTimeout      = 20 * time.Minute
 )
 
-var serviceAccountIssuerClusterOperators = []string{
+var serviceAccountIssuerDependentOperators = []string{
 	"authentication",
 	"openshift-apiserver",
 }
@@ -104,7 +104,7 @@ func (c *ServiceAccountIssuerClient) WaitForKubeAPIServerRollout(ctx context.Con
 			return false, nil
 		}
 
-		for _, name := range serviceAccountIssuerClusterOperators {
+		for _, name := range serviceAccountIssuerDependentOperators {
 			operator := &configv1.ClusterOperator{}
 			if err := c.Client.Get(ctx, client.ObjectKey{Name: name}, operator); err != nil {
 				return false, fmt.Errorf("get OpenShift ClusterOperator %q: %w", name, err)
@@ -128,7 +128,7 @@ func (c *ServiceAccountIssuerClient) rolloutTimeout() time.Duration {
 	if c.RolloutTimeout > 0 {
 		return c.RolloutTimeout
 	}
-	return defaultServiceAccountWaitTimeout
+	return defaultRolloutTimeout
 }
 
 func clusterOperatorHealthyAfter(operator *configv1.ClusterOperator, changedAfter time.Time) bool {

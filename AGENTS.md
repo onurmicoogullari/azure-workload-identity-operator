@@ -117,6 +117,16 @@ Operational notes from a successful CRC run:
   `Ready` condition yet, OpenShift may still be rolling the kube-apiserver after
   the service-account issuer patch. Check `oc get co kube-apiserver
   authentication openshift-apiserver` and wait for `Progressing=False`.
+- During OpenShift service-account issuer handoff, existing `oc` watches or
+  sessions can briefly fail with `Unauthorized` or connection resets while the
+  authentication operator rolls. Before diagnosing resources, refresh the
+  session from a new shell:
+
+  ```bash
+  eval $(crc oc-env)
+  oc login -u kubeadmin -p <password from crc start> https://api.crc.testing:6443
+  ```
+
 - Long waits around Azure role assignments and Key Vault authorization can be
   normal; the script includes retry loops for RBAC propagation.
 - A passing run includes a Job log line like `Successfully retrieved secret`
@@ -125,6 +135,16 @@ Operational notes from a successful CRC run:
 - Closing the CRC keeper session after the test can stop or confuse local CRC
   state. After verification, run `crc setup` if needed and confirm `crc status`
   reports the expected stopped/running state.
+- After a successful script run, verify the script cleaned up Azure resource
+  groups created by the default configuration:
+
+  ```bash
+  az group exists -n rg-azwi-crc-storage-test
+  az group exists -n rg-azwi-crc-wi-test
+  az group exists -n rg-azwi-crc-kv-test
+  ```
+
+  All three commands should return `false`.
 
 ## After Making Changes
 

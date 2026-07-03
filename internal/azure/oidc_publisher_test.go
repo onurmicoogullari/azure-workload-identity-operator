@@ -53,13 +53,13 @@ func TestMergeTagsPreservesExistingTags(t *testing.T) {
 func TestWasCreatedByOperator(t *testing.T) {
 	issuer := testOIDCIssuer()
 
-	if !wasCreatedByOperator(resourceTags(issuer, true), issuer) {
+	if !wasOIDCIssuerResourceCreatedByOperator(resourceTags(issuer, true), issuer) {
 		t.Fatal("expected created tags to match")
 	}
-	if wasCreatedByOperator(resourceTags(issuer, false), issuer) {
+	if wasOIDCIssuerResourceCreatedByOperator(resourceTags(issuer, false), issuer) {
 		t.Fatal("expected adopted tags not to match")
 	}
-	if wasCreatedByOperator(map[string]*string{managedByTag: to.Ptr("someone-else")}, issuer) {
+	if wasOIDCIssuerResourceCreatedByOperator(map[string]*string{managedByTag: to.Ptr("someone-else")}, issuer) {
 		t.Fatal("expected unrelated tags not to match")
 	}
 }

@@ -45,9 +45,9 @@ func (m *WorkloadIdentityManager) Ensure(ctx context.Context, identity *azworklo
 
 	result := workloadidentity.ManagedIdentity{AzureResources: resources}
 	if managedIdentity.Properties != nil {
-		result.ClientID = value(managedIdentity.Properties.ClientID)
-		result.PrincipalID = value(managedIdentity.Properties.PrincipalID)
-		result.TenantID = value(managedIdentity.Properties.TenantID)
+		result.ClientID = stringValue(managedIdentity.Properties.ClientID)
+		result.PrincipalID = stringValue(managedIdentity.Properties.PrincipalID)
+		result.TenantID = stringValue(managedIdentity.Properties.TenantID)
 	}
 	return result, nil
 }
@@ -235,7 +235,7 @@ func wasWorkloadIdentityCreatedByOperator(existing map[string]*string, identity 
 	return wasOperatorCreatedResource(existing, workloadIdentityTags(identity, true))
 }
 
-func value(s *string) string {
+func stringValue(s *string) string {
 	if s == nil {
 		return ""
 	}

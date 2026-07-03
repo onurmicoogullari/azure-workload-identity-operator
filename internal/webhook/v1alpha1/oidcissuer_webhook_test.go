@@ -86,7 +86,7 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 		})
 
 		It("denies deleting the singleton while the cluster still mints service account tokens with the issuer URL", func() {
-			serviceAccountTokens := &fakeServiceAccountTokenClient{currentIssuer: webhookIssuerURL}
+			serviceAccountTokens := &fakeServiceAccountTokenIssuerReader{currentIssuer: webhookIssuerURL}
 			issuer := validWebhookOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
 			issuer.Status.IssuerURL = webhookIssuerURL
 			validator := &OIDCIssuerValidator{
@@ -104,7 +104,7 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 		})
 
 		It("allows deleting the singleton after the cluster service account token issuer handoff", func() {
-			serviceAccountTokens := &fakeServiceAccountTokenClient{currentIssuer: "https://issuer.example"}
+			serviceAccountTokens := &fakeServiceAccountTokenIssuerReader{currentIssuer: "https://issuer.example"}
 			issuer := validWebhookOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
 			issuer.Status.IssuerURL = webhookIssuerURL
 			validator := &OIDCIssuerValidator{
@@ -119,7 +119,7 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 		})
 
 		It("denies deleting the singleton when the cluster service account token issuer cannot be verified", func() {
-			serviceAccountTokens := &fakeServiceAccountTokenClient{err: fmt.Errorf("token request forbidden")}
+			serviceAccountTokens := &fakeServiceAccountTokenIssuerReader{err: fmt.Errorf("token request forbidden")}
 			issuer := validWebhookOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
 			issuer.Status.IssuerURL = webhookIssuerURL
 			validator := &OIDCIssuerValidator{
@@ -158,7 +158,7 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 			issuer.Status.IssuerURL = webhookIssuerURL
 			validator := &OIDCIssuerValidator{
 				Client:                        k8sClient,
-				OpenShiftServiceAccountIssuer: &fakeOpenShiftServiceAccountIssuerGetter{currentIssuer: webhookIssuerURL},
+				OpenShiftServiceAccountIssuer: &fakeOpenShiftServiceAccountIssuerReader{currentIssuer: webhookIssuerURL},
 			}
 
 			_, err := validator.ValidateDelete(ctx, issuer)
@@ -176,7 +176,7 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 			issuer.Status.IssuerURL = webhookIssuerURL
 			validator := &OIDCIssuerValidator{
 				Client:                        k8sClient,
-				OpenShiftServiceAccountIssuer: &fakeOpenShiftServiceAccountIssuerGetter{currentIssuer: "https://issuer.example"},
+				OpenShiftServiceAccountIssuer: &fakeOpenShiftServiceAccountIssuerReader{currentIssuer: "https://issuer.example"},
 			}
 
 			_, err := validator.ValidateDelete(ctx, issuer)
@@ -193,7 +193,7 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 			issuer.Status.PreviousServiceAccountIssuer = &previousIssuer
 			validator := &OIDCIssuerValidator{
 				Client:                        k8sClient,
-				OpenShiftServiceAccountIssuer: &fakeOpenShiftServiceAccountIssuerGetter{currentIssuer: webhookIssuerURL},
+				OpenShiftServiceAccountIssuer: &fakeOpenShiftServiceAccountIssuerReader{currentIssuer: webhookIssuerURL},
 			}
 
 			_, err := validator.ValidateDelete(ctx, issuer)
@@ -209,7 +209,7 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 			issuer.Status.IssuerURL = webhookIssuerURL
 			validator := &OIDCIssuerValidator{
 				Client:                        k8sClient,
-				OpenShiftServiceAccountIssuer: &fakeOpenShiftServiceAccountIssuerGetter{currentIssuer: webhookIssuerURL},
+				OpenShiftServiceAccountIssuer: &fakeOpenShiftServiceAccountIssuerReader{currentIssuer: webhookIssuerURL},
 			}
 
 			_, err := validator.ValidateDelete(ctx, issuer)
@@ -220,7 +220,7 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 		})
 
 		It("denies deletion policy Retain while OpenShift still uses the issuer URL", func() {
-			openShiftServiceAccountIssuer := &fakeOpenShiftServiceAccountIssuerGetter{currentIssuer: webhookIssuerURL}
+			openShiftServiceAccountIssuer := &fakeOpenShiftServiceAccountIssuerReader{currentIssuer: webhookIssuerURL}
 			issuer := validWebhookOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
 			issuer.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyRetain
 			issuer.Spec.OpenShift = &workloadidentityv1alpha1.OpenShiftOIDCIssuerConfig{UpdateServiceAccountIssuer: true}
@@ -240,23 +240,23 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 	})
 })
 
-type fakeOpenShiftServiceAccountIssuerGetter struct {
+type fakeOpenShiftServiceAccountIssuerReader struct {
 	currentIssuer string
 	gets          int
 }
 
-type fakeServiceAccountTokenClient struct {
+type fakeServiceAccountTokenIssuerReader struct {
 	currentIssuer string
 	err           error
 	gets          int
 }
 
-func (f *fakeOpenShiftServiceAccountIssuerGetter) Get(context.Context) (string, error) {
+func (f *fakeOpenShiftServiceAccountIssuerReader) Get(context.Context) (string, error) {
 	f.gets++
 	return f.currentIssuer, nil
 }
 
-func (f *fakeServiceAccountTokenClient) CurrentIssuer(context.Context) (string, error) {
+func (f *fakeServiceAccountTokenIssuerReader) CurrentIssuer(context.Context) (string, error) {
 	f.gets++
 	return f.currentIssuer, f.err
 }

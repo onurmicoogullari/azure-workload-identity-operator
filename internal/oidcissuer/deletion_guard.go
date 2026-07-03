@@ -58,7 +58,7 @@ func CheckWorkloadIdentityDeletionBlock(ctx context.Context, lister WorkloadIden
 	}, nil
 }
 
-func CheckClusterServiceAccountIssuerHandoff(
+func CheckTokenIssuerHandoff(
 	ctx context.Context,
 	issuer *azworkloadidentityv1alpha1.OIDCIssuer,
 	serviceAccountTokens ServiceAccountTokenIssuerReader,
@@ -98,7 +98,7 @@ func CheckClusterServiceAccountIssuerHandoff(
 	}, nil
 }
 
-func CheckOpenShiftServiceAccountIssuerHandoff(
+func CheckOpenShiftIssuerHandoff(
 	ctx context.Context,
 	issuer *azworkloadidentityv1alpha1.OIDCIssuer,
 	openShiftServiceAccountIssuer OpenShiftServiceAccountIssuerReader,

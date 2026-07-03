@@ -91,7 +91,7 @@ func (p *BlobOIDCDocumentPublisher) Delete(ctx context.Context, issuer *azworklo
 	if err != nil {
 		return fmt.Errorf("get storage account before delete: %w", err)
 	}
-	if wasCreatedByOperator(storage.Tags, issuer) {
+	if wasOIDCIssuerResourceCreatedByOperator(storage.Tags, issuer) {
 		_, err = clients.storageAccounts.Delete(ctx, az.ResourceGroupName, az.StorageAccountName, nil)
 		if err != nil && !isNotFound(err) {
 			return err
@@ -201,7 +201,7 @@ func (c *storageClients) ensureResourceGroup(ctx context.Context, issuer *azwork
 		return armresources.ResourceGroup{}, fmt.Errorf("get resource group: %w", err)
 	}
 
-	created := wasCreatedByOperator(rg.Tags, issuer)
+	created := wasOIDCIssuerResourceCreatedByOperator(rg.Tags, issuer)
 	updated, updateErr := c.resourceGroups.CreateOrUpdate(ctx, az.ResourceGroupName, armresources.ResourceGroup{
 		Location: rg.Location,
 		Tags:     mergeTags(rg.Tags, resourceTags(issuer, created)),
@@ -221,7 +221,7 @@ func (c *storageClients) deleteResourceGroupIfOwned(ctx context.Context, issuer 
 	if err != nil {
 		return fmt.Errorf("get resource group before delete: %w", err)
 	}
-	if !wasCreatedByOperator(rg.Tags, issuer) {
+	if !wasOIDCIssuerResourceCreatedByOperator(rg.Tags, issuer) {
 		return nil
 	}
 
@@ -238,7 +238,7 @@ func (c *storageClients) convergeStorageAccount(ctx context.Context, issuer *azw
 	properties := account.Properties
 	needsUpdate := false
 
-	desiredTags := resourceTags(issuer, wasCreatedByOperator(account.Tags, issuer))
+	desiredTags := resourceTags(issuer, wasOIDCIssuerResourceCreatedByOperator(account.Tags, issuer))
 	if account.Tags == nil || !hasTags(account.Tags, desiredTags) {
 		needsUpdate = true
 	}
@@ -328,6 +328,6 @@ func resourceTags(issuer *azworkloadidentityv1alpha1.OIDCIssuer, createdByOperat
 	return operatorOwnershipTags(oidcIssuerUIDTag, string(issuer.UID), createdByOperator)
 }
 
-func wasCreatedByOperator(existing map[string]*string, issuer *azworkloadidentityv1alpha1.OIDCIssuer) bool {
+func wasOIDCIssuerResourceCreatedByOperator(existing map[string]*string, issuer *azworkloadidentityv1alpha1.OIDCIssuer) bool {
 	return wasOperatorCreatedResource(existing, resourceTags(issuer, true))
 }
