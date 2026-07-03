@@ -262,6 +262,7 @@ func (r *OIDCIssuerReconciler) setPublished(ctx context.Context, issuer *azworkl
 	return r.patchOIDCIssuerStatus(ctx, issuer, func(status *azworkloadidentityv1alpha1.OIDCIssuerStatus) {
 		status.IssuerURL = published.IssuerURL
 		status.AzureResources = published.AzureResources
+		status.SigningKeys = published.SigningKeys
 	})
 }
 
@@ -269,6 +270,7 @@ func (r *OIDCIssuerReconciler) setReady(ctx context.Context, issuer *azworkloadi
 	return r.patchOIDCIssuerStatus(ctx, issuer, func(status *azworkloadidentityv1alpha1.OIDCIssuerStatus) {
 		status.IssuerURL = published.IssuerURL
 		status.AzureResources = published.AzureResources
+		status.SigningKeys = published.SigningKeys
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               string(azworkloadidentityv1alpha1.OIDCIssuerConditionReady),
 			Status:             metav1.ConditionTrue,

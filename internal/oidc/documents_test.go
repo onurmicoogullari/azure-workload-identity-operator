@@ -12,7 +12,7 @@ import (
 )
 
 func TestDiscoveryDocument(t *testing.T) {
-	docJSON, err := DiscoveryDocument("https://example.blob.core.windows.net/oidc/", algRS256)
+	docJSON, err := DiscoveryDocument("https://example.blob.core.windows.net/oidc/", algRS256, algES256)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestDiscoveryDocument(t *testing.T) {
 	if doc.JWKSURI != "https://example.blob.core.windows.net/oidc/openid/v1/jwks" {
 		t.Fatalf("jwks_uri = %q", doc.JWKSURI)
 	}
-	if len(doc.IDTokenSigningAlgValuesSupported) != 1 || doc.IDTokenSigningAlgValuesSupported[0] != algRS256 {
+	if len(doc.IDTokenSigningAlgValuesSupported) != 2 || doc.IDTokenSigningAlgValuesSupported[0] != algRS256 || doc.IDTokenSigningAlgValuesSupported[1] != algES256 {
 		t.Fatalf("algorithms = %v", doc.IDTokenSigningAlgValuesSupported)
 	}
 }
@@ -102,6 +102,54 @@ func TestJWKSFromPEMECDSA(t *testing.T) {
 	}
 	if doc.Keys[0].Kty != "EC" || doc.Keys[0].Alg != algES256 || doc.Keys[0].Crv != "P-256" || doc.Keys[0].X == "" || doc.Keys[0].Y == "" {
 		t.Fatalf("unexpected EC JWK: %+v", doc.Keys[0])
+	}
+}
+
+func TestJWKSFromPEMsPublishesMultipleKeys(t *testing.T) {
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecdsaKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	jwksJSON, err := JWKSFromPEMs(publicKeyPEM(t, &rsaKey.PublicKey), publicKeyPEM(t, &ecdsaKey.PublicKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var doc jwksDocument
+	if err := json.Unmarshal(jwksJSON, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Keys) != 2 {
+		t.Fatalf("keys = %d", len(doc.Keys))
+	}
+	if doc.Keys[0].Alg != algRS256 || doc.Keys[1].Alg != algES256 {
+		t.Fatalf("algorithms = %q, %q", doc.Keys[0].Alg, doc.Keys[1].Alg)
+	}
+}
+
+func TestJWKSFromPEMsDeduplicatesKeys(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKeyPEM := publicKeyPEM(t, &privateKey.PublicKey)
+
+	jwksJSON, err := JWKSFromPEMs(publicKeyPEM, publicKeyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var doc jwksDocument
+	if err := json.Unmarshal(jwksJSON, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Keys) != 1 {
+		t.Fatalf("keys = %d", len(doc.Keys))
 	}
 }
 

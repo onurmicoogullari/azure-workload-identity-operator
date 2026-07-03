@@ -45,6 +45,11 @@ type jwk struct {
 	Y   string `json:"y,omitempty"`
 }
 
+type PublicKeyMetadata struct {
+	KeyID     string
+	Algorithm string
+}
+
 func DiscoveryDocument(issuerURL string, signingAlgorithms ...string) ([]byte, error) {
 	issuerURL = strings.TrimRight(issuerURL, "/")
 	if issuerURL == "" {
@@ -66,46 +71,81 @@ func DiscoveryDocument(issuerURL string, signingAlgorithms ...string) ([]byte, e
 }
 
 func SigningAlgorithmFromPEM(publicKeyPEM []byte) (string, error) {
+	metadata, err := PublicKeyMetadataFromPEM(publicKeyPEM)
+	if err != nil {
+		return "", err
+	}
+	return metadata.Algorithm, nil
+}
+
+func PublicKeyMetadataFromPEM(publicKeyPEM []byte) (PublicKeyMetadata, error) {
 	block, _ := pem.Decode(publicKeyPEM)
 	if block == nil {
-		return "", fmt.Errorf("public key PEM is invalid")
+		return PublicKeyMetadata{}, fmt.Errorf("public key PEM is invalid")
 	}
 
 	publicKey, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		return "", fmt.Errorf("parse public key: %w", err)
+		return PublicKeyMetadata{}, fmt.Errorf("parse public key: %w", err)
 	}
 
 	switch key := publicKey.(type) {
 	case *rsa.PublicKey:
-		return algRS256, nil
+		return PublicKeyMetadata{KeyID: keyID(mustMarshalPKIXPublicKey(key)), Algorithm: algRS256}, nil
 	case *ecdsa.PublicKey:
 		if key.Curve != elliptic.P256() {
-			return "", fmt.Errorf("unsupported ECDSA curve")
+			return PublicKeyMetadata{}, fmt.Errorf("unsupported ECDSA curve")
 		}
-		return algES256, nil
+		return PublicKeyMetadata{KeyID: keyID(mustMarshalPKIXPublicKey(key)), Algorithm: algES256}, nil
 	default:
-		return "", fmt.Errorf("unsupported public key type %T", publicKey)
+		return PublicKeyMetadata{}, fmt.Errorf("unsupported public key type %T", publicKey)
 	}
 }
 
 func JWKSFromPEM(publicKeyPEM []byte) ([]byte, error) {
+	return JWKSFromPEMs(publicKeyPEM)
+}
+
+func JWKSFromPEMs(publicKeyPEMs ...[]byte) ([]byte, error) {
+	if len(publicKeyPEMs) == 0 {
+		return nil, fmt.Errorf("at least one public key PEM is required")
+	}
+
+	keys := make([]jwk, 0, len(publicKeyPEMs))
+	seen := map[string]struct{}{}
+
+	for _, publicKeyPEM := range publicKeyPEMs {
+		key, err := jwkFromPEM(publicKeyPEM)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[key.Kid]; ok {
+			continue
+		}
+		seen[key.Kid] = struct{}{}
+		keys = append(keys, key)
+	}
+
+	return json.Marshal(jwksDocument{Keys: keys})
+}
+
+func jwkFromPEM(publicKeyPEM []byte) (jwk, error) {
 	block, _ := pem.Decode(publicKeyPEM)
 	if block == nil {
-		return nil, fmt.Errorf("public key PEM is invalid")
+		return jwk{}, fmt.Errorf("public key PEM is invalid")
 	}
 
 	publicKey, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("parse public key: %w", err)
+		return jwk{}, fmt.Errorf("parse public key: %w", err)
 	}
 
 	key, err := publicKeyToJWK(publicKey)
 	if err != nil {
-		return nil, err
+		return jwk{}, err
 	}
 
-	return json.Marshal(jwksDocument{Keys: []jwk{key}})
+	return key, nil
 }
 
 func publicKeyToJWK(publicKey any) (jwk, error) {

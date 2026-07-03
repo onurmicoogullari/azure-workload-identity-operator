@@ -56,6 +56,10 @@ Optional env:
   SIGNING_KEY_SECRET_NAMESPACE                default: openshift-kube-apiserver
   SIGNING_KEY_SECRET_NAME                     default: bound-service-account-signing-key
   SIGNING_KEY_SECRET_KEY                      default: service-account.pub
+  VERIFY_SIGNING_KEY_ROTATION                 default: true
+  RETIRING_SIGNING_KEY_SECRET_NAMESPACE       default: NAMESPACE
+  RETIRING_SIGNING_KEY_SECRET_NAME            default: azwi-crc-retiring-signing-key
+  RETIRING_SIGNING_KEY_SECRET_KEY             default: service-account.pub
   OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER     default: true
   OIDC_ISSUER_DELETION_POLICY                 default: Delete
   WORKLOAD_IDENTITY_DELETION_POLICY           default: Delete
@@ -241,6 +245,10 @@ SERVICE_ACCOUNT_NAME=${SERVICE_ACCOUNT_NAME:-$WORKLOAD_IDENTITY_NAME}
 SIGNING_KEY_SECRET_NAMESPACE=${SIGNING_KEY_SECRET_NAMESPACE:-openshift-kube-apiserver}
 SIGNING_KEY_SECRET_NAME=${SIGNING_KEY_SECRET_NAME:-bound-service-account-signing-key}
 SIGNING_KEY_SECRET_KEY=${SIGNING_KEY_SECRET_KEY:-service-account.pub}
+verify_signing_key_rotation=${VERIFY_SIGNING_KEY_ROTATION:-true}
+RETIRING_SIGNING_KEY_SECRET_NAMESPACE=${RETIRING_SIGNING_KEY_SECRET_NAMESPACE:-$NAMESPACE}
+RETIRING_SIGNING_KEY_SECRET_NAME=${RETIRING_SIGNING_KEY_SECRET_NAME:-azwi-crc-retiring-signing-key}
+RETIRING_SIGNING_KEY_SECRET_KEY=${RETIRING_SIGNING_KEY_SECRET_KEY:-service-account.pub}
 OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER=${OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER:-true}
 OIDC_ISSUER_DELETION_POLICY=${OIDC_ISSUER_DELETION_POLICY:-Delete}
 WORKLOAD_IDENTITY_DELETION_POLICY=${WORKLOAD_IDENTITY_DELETION_POLICY:-Delete}
@@ -253,6 +261,9 @@ export SERVICE_ACCOUNT_NAME
 export SIGNING_KEY_SECRET_NAMESPACE
 export SIGNING_KEY_SECRET_NAME
 export SIGNING_KEY_SECRET_KEY
+export RETIRING_SIGNING_KEY_SECRET_NAMESPACE
+export RETIRING_SIGNING_KEY_SECRET_NAME
+export RETIRING_SIGNING_KEY_SECRET_KEY
 export OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER
 export OIDC_ISSUER_DELETION_POLICY
 export WORKLOAD_IDENTITY_DELETION_POLICY
@@ -279,6 +290,10 @@ if [[ $run_operator_locally == "true" ]]; then
   need curl
   need openssl
 fi
+if [[ $verify_signing_key_rotation == "true" ]]; then
+  need curl
+  need openssl
+fi
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../.." && pwd)
@@ -301,6 +316,7 @@ captured_original_openshift_service_account_issuer=false
 created_workload_identity_webhook_namespace=false
 created_workload_identity_webhook_release=false
 created_test_namespace=false
+created_retiring_signing_key_secret=false
 active_azure_principal_id=""
 active_azure_principal_type=""
 primary_failure=""
@@ -421,6 +437,12 @@ cleanup_test_namespace() {
     log DELETE "Deleting test namespace $NAMESPACE created by e2e test"
     kubectl delete namespace "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
     kubectl wait --for=delete "namespace/$NAMESPACE" --timeout="$wait_timeout" >/dev/null || return 1
+  fi
+}
+
+cleanup_retiring_signing_key_secret() {
+  if [[ $created_retiring_signing_key_secret == "true" ]]; then
+    kubectl delete secret "$RETIRING_SIGNING_KEY_SECRET_NAME" -n "$RETIRING_SIGNING_KEY_SECRET_NAMESPACE" --ignore-not-found >/dev/null || return 1
   fi
 }
 
@@ -562,6 +584,7 @@ cleanup() {
   cleanup_step "delete script-created role assignments" cleanup_role_assignments
   cleanup_step "delete OpenShift build artifacts" cleanup_build_artifacts
   cleanup_step "delete Key Vault resources" cleanup_key_vault_resource_group
+  cleanup_step "delete retiring signing key Secret" cleanup_retiring_signing_key_secret
   cleanup_step "stop local operator" stop_local_operator
   cleanup_step "uninstall Azure Workload Identity webhook" cleanup_workload_identity_webhook_release
   cleanup_step "delete test namespace" cleanup_test_namespace
@@ -1216,6 +1239,98 @@ verify_oidcissuer_captured_previous_service_account_issuer() {
   fi
 }
 
+create_retiring_signing_key_secret() {
+  local private_key_file
+  local public_key_file
+
+  if [[ $verify_signing_key_rotation != "true" ]]; then
+    return
+  fi
+
+  private_key_file="$tmpdir/retiring-signing-key.pem"
+  public_key_file="$tmpdir/retiring-signing-key.pub"
+
+  log CREATE "Creating retiring signing key Secret $RETIRING_SIGNING_KEY_SECRET_NAMESPACE/$RETIRING_SIGNING_KEY_SECRET_NAME"
+  openssl genrsa -out "$private_key_file" 2048 >/dev/null 2>&1
+  openssl rsa -in "$private_key_file" -pubout -out "$public_key_file" >/dev/null 2>&1
+  kubectl create secret generic "$RETIRING_SIGNING_KEY_SECRET_NAME" \
+    -n "$RETIRING_SIGNING_KEY_SECRET_NAMESPACE" \
+    --from-file="$RETIRING_SIGNING_KEY_SECRET_KEY=$public_key_file" \
+    --dry-run=client \
+    -o yaml | kubectl apply -f - >/dev/null
+  created_retiring_signing_key_secret=true
+}
+
+wait_for_oidcissuer_signing_key_states() {
+  local expected_active_count=$1
+  local expected_retiring_count=$2
+  local timeout=$3
+  local deadline
+  local active_count
+  local retiring_count
+  local signing_keys
+  deadline=$((SECONDS + $(duration_seconds "$timeout")))
+
+  log WATCH "Waiting for OIDCIssuer/default to publish $expected_active_count active and $expected_retiring_count retiring signing key(s)"
+  while ((SECONDS < deadline)); do
+    signing_keys=$(kubectl get oidcissuer default -o jsonpath='{range .status.signingKeys[*]}{.state}{"\n"}{end}' 2>/dev/null || true)
+    active_count=$(printf '%s\n' "$signing_keys" | grep -c '^Active$' || true)
+    retiring_count=$(printf '%s\n' "$signing_keys" | grep -c '^Retiring$' || true)
+    if [[ $active_count == "$expected_active_count" && $retiring_count == "$expected_retiring_count" ]]; then
+      log VERIFY "OIDCIssuer/default status.signingKeys contains expected Active/Retiring states"
+      return
+    fi
+    sleep 5
+  done
+
+  log ERROR "Timed out waiting for OIDCIssuer/default status.signingKeys to contain expected Active/Retiring states"
+  kubectl get oidcissuer default -o yaml >&2 || true
+  return 1
+}
+
+wait_for_jwks_key_count() {
+  local issuer_url=$1
+  local expected_count=$2
+  local timeout=$3
+  local deadline
+  local jwks
+  local key_count
+  deadline=$((SECONDS + $(duration_seconds "$timeout")))
+
+  log WATCH "Waiting for JWKS at $issuer_url/openid/v1/jwks to contain $expected_count key(s)"
+  while ((SECONDS < deadline)); do
+    jwks=$(curl -fsS "$issuer_url/openid/v1/jwks" 2>/dev/null || true)
+    if [[ -n $jwks ]]; then
+      key_count=$(printf '%s\n' "$jwks" | grep -o '"kid"' | wc -l | tr -d '[:space:]')
+      if [[ $key_count == "$expected_count" ]]; then
+        log VERIFY "JWKS contains $expected_count signing key(s)"
+        return
+      fi
+    fi
+    sleep 5
+  done
+
+  log ERROR "Timed out waiting for JWKS to contain $expected_count key(s)"
+  [[ -n ${jwks:-} ]] && printf '%s\n' "$jwks" >&2
+  return 1
+}
+
+verify_signing_key_rotation_publish() {
+  local issuer_url=$1
+
+  if [[ $verify_signing_key_rotation != "true" ]]; then
+    return
+  fi
+
+  create_retiring_signing_key_secret
+  log PATCH "Adding retiring signing key reference to OIDCIssuer/default"
+  kubectl patch oidcissuer default --type=merge -p "{\"spec\":{\"signingKey\":{\"retiringSecretRef\":{\"namespace\":\"$RETIRING_SIGNING_KEY_SECRET_NAMESPACE\",\"name\":\"$RETIRING_SIGNING_KEY_SECRET_NAME\",\"key\":\"$RETIRING_SIGNING_KEY_SECRET_KEY\"}}}}" >/dev/null
+  wait_for_oidcissuer_observed_generation "$wait_timeout" || return 1
+  kubectl wait --for=condition=Ready oidcissuer/default --timeout="$wait_timeout" >/dev/null || return 1
+  wait_for_oidcissuer_signing_key_states 1 1 "$wait_timeout" || return 1
+  wait_for_jwks_key_count "$issuer_url" 2 "$wait_timeout" || return 1
+}
+
 patch_openshift_service_account_issuer() {
   local issuer_url=$1
 
@@ -1538,6 +1653,7 @@ if [[ -z $issuer_url ]]; then
   die "OIDCIssuer default is missing status.issuerURL"
 fi
 verify_oidcissuer_captured_previous_service_account_issuer "$issuer_url"
+verify_signing_key_rotation_publish "$issuer_url"
 wait_for_openshift_api_server_rollout "$issuer_url"
 
 ensure_key_vault_exists

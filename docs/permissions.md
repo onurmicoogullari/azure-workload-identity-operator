@@ -39,7 +39,9 @@ The operator disables shared key access on managed storage accounts and uploads 
 
 ## Signing Key Secret Access
 
-The default operator RBAC does not grant access to Secrets. Grant the operator access only to the exact Secret referenced by `spec.signingKey.secretRef`.
+The default operator RBAC does not grant access to Secrets. Grant the operator access only to the exact Secret referenced by `spec.signingKey.secretRef` and, during rotation, the Secret referenced by `spec.signingKey.retiringSecretRef`.
+
+When rotating signing keys, keep the active and retiring signing keys in the same namespace when possible so access can be granted with one namespace-scoped Role. If a retiring key lives in a different namespace, create a separate Role and RoleBinding in that namespace for that exact Secret.
 
 Example:
 
@@ -52,7 +54,9 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["bound-service-account-signing-key"]
+    resourceNames:
+      - "bound-service-account-signing-key"
+      - "previous-bound-service-account-signing-key"
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -72,7 +76,17 @@ roleRef:
 
 ## Signing Key Changes
 
-The operator reads the configured signing key Secret during reconciliation. To avoid broad cluster-wide Secret watch permissions, Secret changes are picked up by periodic reconciliation rather than an immediate Secret watch. The default interval is 5 minutes and can be changed with `--signing-key-refresh-interval`.
+The operator reads the configured active and retiring signing key Secrets during reconciliation. To avoid broad cluster-wide Secret watch permissions, Secret changes are picked up by periodic reconciliation rather than an immediate Secret watch. The default interval is 5 minutes and can be changed with `--signing-key-refresh-interval`.
+
+To rotate safely:
+
+1. Add the old signing key to `spec.signingKey.retiringSecretRef`.
+2. Change `spec.signingKey.secretRef` to the new active signing key.
+3. Wait until the operator publishes both keys and `.status.signingKeys` shows the old key as `Retiring`.
+4. Keep the retiring key configured for at least the longest possible service account token lifetime, plus enough time for one successful reconciliation.
+5. Remove the retiring key reference and its Secret RBAC after tokens signed by that key can no longer be valid.
+
+The operator does not automatically decide when a retiring key is safe to remove. That decision depends on the cluster token lifetime and any external consumers that may cache tokens or JWKS.
 
 ## Deletion Behavior
 

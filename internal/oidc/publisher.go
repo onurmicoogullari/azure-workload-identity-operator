@@ -14,4 +14,5 @@ type Publisher interface {
 type PublishedDocuments struct {
 	IssuerURL      string
 	AzureResources []azworkloadidentityv1alpha1.AzureResource
+	SigningKeys    []azworkloadidentityv1alpha1.SigningKeyStatus
 }
