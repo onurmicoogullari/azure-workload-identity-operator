@@ -57,16 +57,22 @@ type AzureWorkloadIdentityConfig struct {
 
 	// resourceGroupName is the Azure resource group containing the managed identity.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=90
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_().-]*[A-Za-z0-9_()-]$`
 	// +required
 	ResourceGroupName string `json:"resourceGroupName"`
 
 	// userAssignedIdentityName is the Azure User Assigned Managed Identity name.
-	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MinLength=3
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_-]*$`
 	// +required
 	UserAssignedIdentityName string `json:"userAssignedIdentityName"`
 
 	// federatedIdentityCredentialName is the Azure federated identity credential name.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=120
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_-]*$`
 	// +required
 	FederatedIdentityCredentialName string `json:"federatedIdentityCredentialName"`
 }
@@ -74,6 +80,8 @@ type AzureWorkloadIdentityConfig struct {
 type ServiceAccountReference struct {
 	// name is the ServiceAccount name.
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
 	// +required
 	Name string `json:"name"`
 }

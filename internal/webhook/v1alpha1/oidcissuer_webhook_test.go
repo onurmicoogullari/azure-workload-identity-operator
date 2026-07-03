@@ -77,14 +77,6 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 			}).Should(Succeed())
 		})
 
-		It("allows deleting unsupported OIDCIssuers", func() {
-			issuer := validWebhookOIDCIssuer("not-default")
-			Expect(k8sClient.Create(ctx, issuer)).To(Succeed())
-			Expect(k8sClient.Create(ctx, validWebhookWorkloadIdentity(blockingIdentityName, "default"))).To(Succeed())
-
-			Expect(k8sClient.Delete(ctx, issuer)).To(Succeed())
-		})
-
 		It("denies deleting the singleton while the cluster still mints service account tokens with the issuer URL", func() {
 			serviceAccountTokens := &fakeServiceAccountTokenIssuerReader{currentIssuer: webhookIssuerURL}
 			issuer := validWebhookOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
@@ -238,6 +230,82 @@ var _ = Describe("OIDCIssuer Webhook", func() {
 			Expect(openShiftServiceAccountIssuer.gets).To(Equal(1))
 		})
 	})
+
+	Context("When creating OIDCIssuer", func() {
+		It("allows creating the default singleton", func() {
+			issuer := validWebhookOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
+
+			Expect(k8sClient.Create(ctx, issuer)).To(Succeed())
+		})
+
+		It("denies creating non-default OIDCIssuers", func() {
+			issuer := validWebhookOIDCIssuer("not-default")
+
+			err := k8sClient.Create(ctx, issuer)
+
+			Expect(err).To(HaveOccurred())
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring(`must be "default"`))
+		})
+	})
+
+	Context("When updating OIDCIssuer", func() {
+		It("allows updating deletion policy and OpenShift configuration", func() {
+			issuer := validWebhookOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
+			Expect(k8sClient.Create(ctx, issuer)).To(Succeed())
+
+			current := &workloadidentityv1alpha1.OIDCIssuer{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: workloadidentityv1alpha1.OIDCIssuerName}, current)).To(Succeed())
+			current.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
+			current.Spec.OpenShift = &workloadidentityv1alpha1.OpenShiftOIDCIssuerConfig{UpdateServiceAccountIssuer: true}
+
+			Expect(k8sClient.Update(ctx, current)).To(Succeed())
+		})
+
+		It("denies changing Azure issuer storage fields", func() {
+			issuer := validWebhookOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
+			Expect(k8sClient.Create(ctx, issuer)).To(Succeed())
+
+			current := &workloadidentityv1alpha1.OIDCIssuer{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: workloadidentityv1alpha1.OIDCIssuerName}, current)).To(Succeed())
+			current.Spec.Azure.StorageAccountName = "oidctest124"
+
+			err := k8sClient.Update(ctx, current)
+
+			Expect(err).To(HaveOccurred())
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("spec.azure"))
+			Expect(err.Error()).To(ContainSubstring("field is immutable"))
+		})
+
+		It("allows changing the active signing key reference for rotation", func() {
+			issuer := validWebhookOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
+			Expect(k8sClient.Create(ctx, issuer)).To(Succeed())
+
+			current := &workloadidentityv1alpha1.OIDCIssuer{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: workloadidentityv1alpha1.OIDCIssuerName}, current)).To(Succeed())
+			current.Spec.SigningKey.SecretRef.Name = "other-signing-key"
+
+			Expect(k8sClient.Update(ctx, current)).To(Succeed())
+		})
+
+		It("denies configuring the active signing key as retiring", func() {
+			issuer := validWebhookOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
+			Expect(k8sClient.Create(ctx, issuer)).To(Succeed())
+
+			current := &workloadidentityv1alpha1.OIDCIssuer{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: workloadidentityv1alpha1.OIDCIssuerName}, current)).To(Succeed())
+			retiringRef := current.Spec.SigningKey.SecretRef
+			current.Spec.SigningKey.RetiringSecretRef = &retiringRef
+
+			err := k8sClient.Update(ctx, current)
+
+			Expect(err).To(HaveOccurred())
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("spec.signingKey.retiringSecretRef"))
+			Expect(err.Error()).To(ContainSubstring("must not reference the active signing key"))
+		})
+	})
 })
 
 type fakeOpenShiftServiceAccountIssuerReader struct {
@@ -266,7 +334,7 @@ func validWebhookOIDCIssuer(name string) *workloadidentityv1alpha1.OIDCIssuer {
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: workloadidentityv1alpha1.OIDCIssuerSpec{
 			Azure: workloadidentityv1alpha1.AzureOIDCIssuerConfig{
-				SubscriptionID:     "00000000-0000-0000-0000-000000000000",
+				SubscriptionID:     webhookSubscriptionID,
 				Location:           "swedencentral",
 				ResourceGroupName:  "rg-oidc-test",
 				StorageAccountName: "oidctest123",
@@ -279,22 +347,6 @@ func validWebhookOIDCIssuer(name string) *workloadidentityv1alpha1.OIDCIssuer {
 					Key:       "tls.key",
 				},
 			},
-		},
-	}
-}
-
-func validWebhookWorkloadIdentity(name, namespace string) *workloadidentityv1alpha1.WorkloadIdentity {
-	return &workloadidentityv1alpha1.WorkloadIdentity{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec: workloadidentityv1alpha1.WorkloadIdentitySpec{
-			Azure: workloadidentityv1alpha1.AzureWorkloadIdentityConfig{
-				SubscriptionID:                  "00000000-0000-0000-0000-000000000000",
-				Location:                        "swedencentral",
-				ResourceGroupName:               "rg-wi-test",
-				UserAssignedIdentityName:        "uami-wi-test",
-				FederatedIdentityCredentialName: "fic-wi-test",
-			},
-			ServiceAccount: workloadidentityv1alpha1.ServiceAccountReference{Name: "test-service-account"},
 		},
 	}
 }
