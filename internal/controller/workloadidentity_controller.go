@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"time"
@@ -103,11 +104,28 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, r.setWorkloadIdentityNotReady(ctx, identity, "ManagerNotConfigured", "Azure workload identity manager is not configured")
 	}
 
+	if err := r.validateExistingServiceAccount(ctx, identity); err != nil {
+		log.Error(err, "Failed to validate existing ServiceAccount")
+		reason := "ServiceAccountReadFailed"
+		if isServiceAccountConflict(err) {
+			reason = "ServiceAccountConflict"
+		}
+		statusErr := r.setWorkloadIdentityNotReady(ctx, identity, reason, err.Error())
+		if statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{}, err
+	}
+
 	subject := serviceAccountSubject(identity)
 	managed, err := r.Manager.Ensure(ctx, identity, issuer.Status.IssuerURL, subject)
 	if err != nil {
 		log.Error(err, "Failed to ensure Azure workload identity")
-		statusErr := r.setWorkloadIdentityNotReady(ctx, identity, "AzureEnsureFailed", err.Error())
+		reason := "AzureEnsureFailed"
+		if conflictReason, ok := workloadidentity.ConflictReason(err); ok {
+			reason = conflictReason
+		}
+		statusErr := r.setWorkloadIdentityNotReady(ctx, identity, reason, err.Error())
 		if statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
@@ -116,7 +134,11 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	if err := r.ensureServiceAccount(ctx, identity, managed); err != nil {
 		log.Error(err, "Failed to ensure ServiceAccount")
-		statusErr := r.setWorkloadIdentityNotReady(ctx, identity, "ServiceAccountEnsureFailed", err.Error())
+		reason := "ServiceAccountEnsureFailed"
+		if isServiceAccountConflict(err) {
+			reason = "ServiceAccountConflict"
+		}
+		statusErr := r.setWorkloadIdentityNotReady(ctx, identity, reason, err.Error())
 		if statusErr != nil {
 			return ctrl.Result{}, statusErr
 		}
@@ -159,11 +181,113 @@ func (r *WorkloadIdentityReconciler) ensureServiceAccount(ctx context.Context, i
 		return err
 	}
 
+	if err := validateServiceAccountOwnership(identity, serviceAccount); err != nil {
+		return err
+	}
+	if err := validateServiceAccountAnnotations(identity, serviceAccount, managed); err != nil {
+		return err
+	}
+
 	original := serviceAccount.DeepCopy()
 	created := serviceAccount.Labels[serviceAccountCreatedBy] == trueValue && serviceAccount.Labels[serviceAccountUID] == string(identity.UID)
 	serviceAccount.Labels = mergeStringMap(serviceAccount.Labels, desiredServiceAccountLabels(identity, created))
 	serviceAccount.Annotations = mergeStringMap(serviceAccount.Annotations, desiredServiceAccountAnnotations(managed))
 	return r.Patch(ctx, serviceAccount, client.MergeFrom(original))
+}
+
+func (r *WorkloadIdentityReconciler) validateExistingServiceAccount(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) error {
+	serviceAccount := &corev1.ServiceAccount{}
+	if err := r.Get(ctx, serviceAccountKey(identity), serviceAccount); apierrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := validateServiceAccountOwnership(identity, serviceAccount); err != nil {
+		return err
+	}
+	return validateUnownedServiceAccountAnnotations(identity, serviceAccount)
+}
+
+type serviceAccountConflictError struct {
+	message string
+}
+
+func (e *serviceAccountConflictError) Error() string {
+	return e.message
+}
+
+func newServiceAccountConflict(format string, args ...any) error {
+	return &serviceAccountConflictError{message: fmt.Sprintf(format, args...)}
+}
+
+func isServiceAccountConflict(err error) bool {
+	conflict := &serviceAccountConflictError{}
+	return errors.As(err, &conflict)
+}
+
+func validateServiceAccountOwnership(identity *azworkloadidentityv1alpha1.WorkloadIdentity, serviceAccount *corev1.ServiceAccount) error {
+	ownerUID := serviceAccount.Labels[serviceAccountUID]
+	if ownerUID != "" && ownerUID != string(identity.UID) {
+		return newServiceAccountConflict(
+			"ServiceAccount %q is already managed by another WorkloadIdentity",
+			client.ObjectKeyFromObject(serviceAccount).String(),
+		)
+	}
+	if serviceAccount.Labels[serviceAccountManagedBy] == serviceAccountManagerName && ownerUID == "" {
+		return newServiceAccountConflict(
+			"ServiceAccount %q is managed by this operator but does not declare a WorkloadIdentity owner",
+			client.ObjectKeyFromObject(serviceAccount).String(),
+		)
+	}
+	return nil
+}
+
+func validateServiceAccountAnnotations(identity *azworkloadidentityv1alpha1.WorkloadIdentity, serviceAccount *corev1.ServiceAccount, managed workloadidentity.ManagedIdentity) error {
+	if serviceAccountOwnedBy(identity, serviceAccount) {
+		return nil
+	}
+
+	if existing := serviceAccount.Annotations[serviceAccountClientID]; existing != "" && existing != managed.ClientID {
+		return newServiceAccountConflict(
+			"ServiceAccount %q is already annotated for Azure client ID %q",
+			client.ObjectKeyFromObject(serviceAccount).String(),
+			existing,
+		)
+	}
+	if existing := serviceAccount.Annotations[serviceAccountTenantID]; existing != "" && existing != managed.TenantID {
+		return newServiceAccountConflict(
+			"ServiceAccount %q is already annotated for Azure tenant ID %q",
+			client.ObjectKeyFromObject(serviceAccount).String(),
+			existing,
+		)
+	}
+	return nil
+}
+
+func validateUnownedServiceAccountAnnotations(identity *azworkloadidentityv1alpha1.WorkloadIdentity, serviceAccount *corev1.ServiceAccount) error {
+	if serviceAccountOwnedBy(identity, serviceAccount) {
+		return nil
+	}
+
+	if existing := serviceAccount.Annotations[serviceAccountClientID]; existing != "" {
+		return newServiceAccountConflict(
+			"ServiceAccount %q is already annotated for Azure client ID %q",
+			client.ObjectKeyFromObject(serviceAccount).String(),
+			existing,
+		)
+	}
+	if existing := serviceAccount.Annotations[serviceAccountTenantID]; existing != "" {
+		return newServiceAccountConflict(
+			"ServiceAccount %q is already annotated for Azure tenant ID %q",
+			client.ObjectKeyFromObject(serviceAccount).String(),
+			existing,
+		)
+	}
+	return nil
+}
+
+func serviceAccountOwnedBy(identity *azworkloadidentityv1alpha1.WorkloadIdentity, serviceAccount *corev1.ServiceAccount) bool {
+	return serviceAccount.Labels[serviceAccountUID] == string(identity.UID)
 }
 
 func (r *WorkloadIdentityReconciler) deleteServiceAccountIfOwned(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) error {
