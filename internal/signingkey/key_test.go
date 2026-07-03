@@ -19,6 +19,11 @@ import (
 	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
 )
 
+const (
+	testSigningKeyNamespace = "kube-system"
+	testSigningKeyDataKey   = "tls.key"
+)
+
 func TestPublicKeyPEMFromPublicKey(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -64,6 +69,44 @@ func TestPublicKeyPEMMissingKey(t *testing.T) {
 	}
 }
 
+func TestPublicKeysPEMIncludesActiveAndRetiringKeys(t *testing.T) {
+	activeKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retiringKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	activeRef := azworkloadidentityv1alpha1.SecretKeyReference{Name: "active-key", Namespace: testSigningKeyNamespace, Key: testSigningKeyDataKey}
+	retiringRef := azworkloadidentityv1alpha1.SecretKeyReference{Name: "retiring-key", Namespace: testSigningKeyNamespace, Key: testSigningKeyDataKey}
+	k8sClient := fakeClient(t,
+		signingKeySecretForRef(activeRef, publicKeyPEM(t, &activeKey.PublicKey)),
+		signingKeySecretForRef(retiringRef, publicKeyPEM(t, &retiringKey.PublicKey)),
+	)
+
+	keys, err := PublicKeysPEM(context.Background(), k8sClient, azworkloadidentityv1alpha1.SigningKeySource{
+		SecretRef:         activeRef,
+		RetiringSecretRef: &retiringRef,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(keys) != 2 {
+		t.Fatalf("keys = %d", len(keys))
+	}
+	if keys[0].State != azworkloadidentityv1alpha1.SigningKeyStateActive {
+		t.Fatalf("active state = %q", keys[0].State)
+	}
+	if keys[1].State != azworkloadidentityv1alpha1.SigningKeyStateRetiring {
+		t.Fatalf("retiring state = %q", keys[1].State)
+	}
+	assertPublicKeyPEM(t, keys[0].PEM)
+	assertPublicKeyPEM(t, keys[1].PEM)
+}
+
 func publicKeyPEMFromSecret(t *testing.T, keyPEM []byte) []byte {
 	t.Helper()
 
@@ -97,14 +140,18 @@ func publicKeyPEM(t *testing.T, publicKey any) []byte {
 }
 
 func signingKeySecret(keyPEM []byte) *corev1.Secret {
+	return signingKeySecretForRef(signingKeyRef(), keyPEM)
+}
+
+func signingKeySecretForRef(ref azworkloadidentityv1alpha1.SecretKeyReference, keyPEM []byte) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "service-account-signing-key", Namespace: "kube-system"},
-		Data:       map[string][]byte{"tls.key": keyPEM},
+		ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: ref.Namespace},
+		Data:       map[string][]byte{ref.Key: keyPEM},
 	}
 }
 
 func signingKeyRef() azworkloadidentityv1alpha1.SecretKeyReference {
-	return azworkloadidentityv1alpha1.SecretKeyReference{Name: "service-account-signing-key", Namespace: "kube-system", Key: "tls.key"}
+	return azworkloadidentityv1alpha1.SecretKeyReference{Name: "service-account-signing-key", Namespace: testSigningKeyNamespace, Key: testSigningKeyDataKey}
 }
 
 func fakeClient(t *testing.T, objects ...runtime.Object) client.Client {

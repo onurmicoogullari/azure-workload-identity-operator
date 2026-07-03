@@ -17,6 +17,34 @@ import (
 
 const publicKeyPEMType = "PUBLIC KEY"
 
+type PublicKey struct {
+	PEM   []byte
+	State azworkloadidentityv1alpha1.SigningKeyState
+}
+
+func PublicKeysPEM(ctx context.Context, c client.Client, source azworkloadidentityv1alpha1.SigningKeySource) ([]PublicKey, error) {
+	refs := []azworkloadidentityv1alpha1.SecretKeyReference{source.SecretRef}
+	if source.RetiringSecretRef != nil {
+		refs = append(refs, *source.RetiringSecretRef)
+	}
+	keys := make([]PublicKey, 0, len(refs))
+
+	for i, ref := range refs {
+		keyPEM, err := PublicKeyPEM(ctx, c, ref)
+		if err != nil {
+			return nil, err
+		}
+
+		state := azworkloadidentityv1alpha1.SigningKeyStateRetiring
+		if i == 0 {
+			state = azworkloadidentityv1alpha1.SigningKeyStateActive
+		}
+		keys = append(keys, PublicKey{PEM: keyPEM, State: state})
+	}
+
+	return keys, nil
+}
+
 func PublicKeyPEM(ctx context.Context, c client.Client, ref azworkloadidentityv1alpha1.SecretKeyReference) ([]byte, error) {
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}

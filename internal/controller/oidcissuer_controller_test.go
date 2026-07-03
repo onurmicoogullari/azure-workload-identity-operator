@@ -139,6 +139,11 @@ var _ = Describe("OIDCIssuer Controller", func() {
 						ID:   "/subscriptions/test/resourceGroups/rg-oidc-test",
 						Kind: "ResourceGroup",
 					}},
+					SigningKeys: []workloadidentityv1alpha1.SigningKeyStatus{{
+						KID:       "test-kid",
+						Algorithm: "RS256",
+						State:     workloadidentityv1alpha1.SigningKeyStateActive,
+					}},
 				},
 			}
 			resource := validOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
@@ -158,6 +163,11 @@ var _ = Describe("OIDCIssuer Controller", func() {
 			Expect(updated.Finalizers).To(ContainElement(oidcIssuerFinalizer))
 			Expect(updated.Status.IssuerURL).To(Equal(testIssuerURL))
 			Expect(updated.Status.AzureResources).To(HaveLen(1))
+			Expect(updated.Status.SigningKeys).To(Equal([]workloadidentityv1alpha1.SigningKeyStatus{{
+				KID:       "test-kid",
+				Algorithm: "RS256",
+				State:     workloadidentityv1alpha1.SigningKeyStateActive,
+			}}))
 			condition := apimeta.FindStatusCondition(updated.Status.Conditions, string(workloadidentityv1alpha1.OIDCIssuerConditionReady))
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))

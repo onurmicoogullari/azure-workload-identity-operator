@@ -34,6 +34,13 @@ const (
 	OIDCIssuerConditionReady OIDCIssuerConditionType = "Ready"
 )
 
+type SigningKeyState string
+
+const (
+	SigningKeyStateActive   SigningKeyState = "Active"
+	SigningKeyStateRetiring SigningKeyState = "Retiring"
+)
+
 const OIDCIssuerName = "default"
 
 // OIDCIssuerSpec defines the desired state of OIDCIssuer.
@@ -104,9 +111,14 @@ type SecretKeyReference struct {
 }
 
 type SigningKeySource struct {
-	// secretRef references a Secret containing a PEM public or private signing key.
+	// secretRef references the active Secret containing a PEM public or private signing key.
 	// +required
 	SecretRef SecretKeyReference `json:"secretRef"`
+
+	// retiringSecretRef references the previous signing key that should remain published in JWKS
+	// while service account tokens signed by it can still be valid.
+	// +optional
+	RetiringSecretRef *SecretKeyReference `json:"retiringSecretRef,omitempty"`
 }
 
 type OpenShiftOIDCIssuerConfig struct {
@@ -135,6 +147,12 @@ type OIDCIssuerStatus struct {
 	// +optional
 	AzureResources []AzureResource `json:"azureResources,omitempty"`
 
+	// signingKeys contains the public signing keys currently published in JWKS.
+	// +listType=map
+	// +listMapKey=kid
+	// +optional
+	SigningKeys []SigningKeyStatus `json:"signingKeys,omitempty"`
+
 	// previousServiceAccountIssuer is the OpenShift Authentication.spec.serviceAccountIssuer value
 	// captured before this OIDCIssuer updated it. A present empty string means the previous value was empty.
 	// +optional
@@ -157,6 +175,23 @@ type AzureResource struct {
 	// +kubebuilder:validation:MinLength=1
 	// +required
 	Kind string `json:"kind"`
+}
+
+type SigningKeyStatus struct {
+	// kid is the JSON Web Key ID published for this signing key.
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	KID string `json:"kid"`
+
+	// algorithm is the JOSE signing algorithm advertised for this key.
+	// +kubebuilder:validation:MinLength=1
+	// +required
+	Algorithm string `json:"algorithm"`
+
+	// state indicates whether this key is the active signing key or a retiring key.
+	// +kubebuilder:validation:Enum=Active;Retiring
+	// +required
+	State SigningKeyState `json:"state"`
 }
 
 // +kubebuilder:object:root=true

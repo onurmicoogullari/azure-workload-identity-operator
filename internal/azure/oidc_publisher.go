@@ -24,6 +24,12 @@ type BlobOIDCDocumentPublisher struct {
 	Credential azcore.TokenCredential
 }
 
+type oidcDocuments struct {
+	Discovery   []byte
+	JWKS        []byte
+	SigningKeys []azworkloadidentityv1alpha1.SigningKeyStatus
+}
+
 func (p *BlobOIDCDocumentPublisher) Publish(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer) (oidc.PublishedDocuments, error) {
 	if p.Credential == nil {
 		return oidc.PublishedDocuments{}, fmt.Errorf("azure credential is required")
@@ -43,34 +49,76 @@ func (p *BlobOIDCDocumentPublisher) Publish(ctx context.Context, issuer *azworkl
 	}
 
 	issuerURL := issuerURL(issuer)
-	publicKeyPEM, err := signingkey.PublicKeyPEM(ctx, p.Client, issuer.Spec.SigningKey.SecretRef)
+	documents, err := buildOIDCDocuments(ctx, p.Client, issuer, issuerURL)
 	if err != nil {
 		return oidc.PublishedDocuments{}, err
 	}
 
-	signingAlgorithm, err := oidc.SigningAlgorithmFromPEM(publicKeyPEM)
+	if err := clients.uploadJSON(ctx, issuer, ".well-known/openid-configuration", documents.Discovery); err != nil {
+		return oidc.PublishedDocuments{}, err
+	}
+	if err := clients.uploadJSON(ctx, issuer, "openid/v1/jwks", documents.JWKS); err != nil {
+		return oidc.PublishedDocuments{}, err
+	}
+
+	return oidc.PublishedDocuments{IssuerURL: issuerURL, AzureResources: resources, SigningKeys: documents.SigningKeys}, nil
+}
+
+func buildOIDCDocuments(ctx context.Context, c client.Client, issuer *azworkloadidentityv1alpha1.OIDCIssuer, issuerURL string) (oidcDocuments, error) {
+	publicKeys, err := signingkey.PublicKeysPEM(ctx, c, issuer.Spec.SigningKey)
 	if err != nil {
-		return oidc.PublishedDocuments{}, err
+		return oidcDocuments{}, err
 	}
 
-	discovery, err := oidc.DiscoveryDocument(issuerURL, signingAlgorithm)
+	signingKeys, algorithms, publicKeyPEMs, err := publishedSigningKeys(publicKeys)
 	if err != nil {
-		return oidc.PublishedDocuments{}, err
+		return oidcDocuments{}, err
 	}
 
-	jwks, err := oidc.JWKSFromPEM(publicKeyPEM)
+	discovery, err := oidc.DiscoveryDocument(issuerURL, algorithms...)
 	if err != nil {
-		return oidc.PublishedDocuments{}, err
+		return oidcDocuments{}, err
 	}
 
-	if err := clients.uploadJSON(ctx, issuer, ".well-known/openid-configuration", discovery); err != nil {
-		return oidc.PublishedDocuments{}, err
-	}
-	if err := clients.uploadJSON(ctx, issuer, "openid/v1/jwks", jwks); err != nil {
-		return oidc.PublishedDocuments{}, err
+	jwks, err := oidc.JWKSFromPEMs(publicKeyPEMs...)
+	if err != nil {
+		return oidcDocuments{}, err
 	}
 
-	return oidc.PublishedDocuments{IssuerURL: issuerURL, AzureResources: resources}, nil
+	return oidcDocuments{Discovery: discovery, JWKS: jwks, SigningKeys: signingKeys}, nil
+}
+
+func publishedSigningKeys(publicKeys []signingkey.PublicKey) ([]azworkloadidentityv1alpha1.SigningKeyStatus, []string, [][]byte, error) {
+	signingKeys := make([]azworkloadidentityv1alpha1.SigningKeyStatus, 0, len(publicKeys))
+	algorithms := make([]string, 0, len(publicKeys))
+	publicKeyPEMs := make([][]byte, 0, len(publicKeys))
+	seenKeyIDs := map[string]struct{}{}
+	seenAlgorithms := map[string]struct{}{}
+
+	for _, publicKey := range publicKeys {
+		metadata, err := oidc.PublicKeyMetadataFromPEM(publicKey.PEM)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if _, ok := seenKeyIDs[metadata.KeyID]; ok {
+			continue
+		}
+		seenKeyIDs[metadata.KeyID] = struct{}{}
+		signingKeys = append(signingKeys, azworkloadidentityv1alpha1.SigningKeyStatus{
+			KID:       metadata.KeyID,
+			Algorithm: metadata.Algorithm,
+			State:     publicKey.State,
+		})
+		publicKeyPEMs = append(publicKeyPEMs, publicKey.PEM)
+
+		if _, ok := seenAlgorithms[metadata.Algorithm]; ok {
+			continue
+		}
+		seenAlgorithms[metadata.Algorithm] = struct{}{}
+		algorithms = append(algorithms, metadata.Algorithm)
+	}
+
+	return signingKeys, algorithms, publicKeyPEMs, nil
 }
 
 func (p *BlobOIDCDocumentPublisher) Delete(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer) error {

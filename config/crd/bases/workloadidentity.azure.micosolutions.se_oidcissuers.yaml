@@ -105,9 +105,31 @@ spec:
                 description: signingKey points at the Kubernetes service-account signing
                   key used to publish JWKS.
                 properties:
+                  retiringSecretRef:
+                    description: |-
+                      retiringSecretRef references the previous signing key that should remain published in JWKS
+                      while service account tokens signed by it can still be valid.
+                    properties:
+                      key:
+                        description: key is the Secret data key.
+                        minLength: 1
+                        type: string
+                      name:
+                        description: name is the Secret name.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: namespace is the Secret namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - key
+                    - name
+                    - namespace
+                    type: object
                   secretRef:
-                    description: secretRef references a Secret containing a PEM public
-                      or private signing key.
+                    description: secretRef references the active Secret containing
+                      a PEM public or private signing key.
                     properties:
                       key:
                         description: key is the Secret data key.
@@ -238,6 +260,37 @@ spec:
                   previousServiceAccountIssuer is the OpenShift Authentication.spec.serviceAccountIssuer value
                   captured before this OIDCIssuer updated it. A present empty string means the previous value was empty.
                 type: string
+              signingKeys:
+                description: signingKeys contains the public signing keys currently
+                  published in JWKS.
+                items:
+                  properties:
+                    algorithm:
+                      description: algorithm is the JOSE signing algorithm advertised
+                        for this key.
+                      minLength: 1
+                      type: string
+                    kid:
+                      description: kid is the JSON Web Key ID published for this signing
+                        key.
+                      minLength: 1
+                      type: string
+                    state:
+                      description: state indicates whether this key is the active
+                        signing key or a retiring key.
+                      enum:
+                      - Active
+                      - Retiring
+                      type: string
+                  required:
+                  - algorithm
+                  - kid
+                  - state
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - kid
+                x-kubernetes-list-type: map
             type: object
         required:
         - spec
