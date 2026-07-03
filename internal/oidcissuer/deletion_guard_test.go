@@ -74,12 +74,12 @@ func TestCheckWorkloadIdentityDeletionBlock(t *testing.T) {
 	}
 }
 
-func TestCheckClusterServiceAccountIssuerHandoffWithoutIssuerURL(t *testing.T) {
+func TestCheckTokenIssuerHandoffWithoutIssuerURL(t *testing.T) {
 	tokens := &fakeServiceAccountTokenIssuer{currentIssuer: guardTestIssuerURL}
-	result, err := CheckClusterServiceAccountIssuerHandoff(context.Background(), guardTestIssuer(""), tokens, nil)
+	result, err := CheckTokenIssuerHandoff(context.Background(), guardTestIssuer(""), tokens, nil)
 
 	if err != nil {
-		t.Fatalf("CheckClusterServiceAccountIssuerHandoff returned error: %v", err)
+		t.Fatalf("CheckTokenIssuerHandoff returned error: %v", err)
 	}
 	if result.Blocked || result.CheckFailed {
 		t.Fatalf("expected empty result, got %#v", result)
@@ -89,11 +89,11 @@ func TestCheckClusterServiceAccountIssuerHandoffWithoutIssuerURL(t *testing.T) {
 	}
 }
 
-func TestCheckClusterServiceAccountIssuerHandoffGuardUnavailable(t *testing.T) {
-	result, err := CheckClusterServiceAccountIssuerHandoff(context.Background(), guardTestIssuer(guardTestIssuerURL), nil, nil)
+func TestCheckTokenIssuerHandoffGuardUnavailable(t *testing.T) {
+	result, err := CheckTokenIssuerHandoff(context.Background(), guardTestIssuer(guardTestIssuerURL), nil, nil)
 
 	if err != nil {
-		t.Fatalf("CheckClusterServiceAccountIssuerHandoff returned error: %v", err)
+		t.Fatalf("CheckTokenIssuerHandoff returned error: %v", err)
 	}
 	if !result.Blocked {
 		t.Fatal("expected deletion to be blocked")
@@ -106,8 +106,8 @@ func TestCheckClusterServiceAccountIssuerHandoffGuardUnavailable(t *testing.T) {
 	}
 }
 
-func TestCheckClusterServiceAccountIssuerHandoffSkipsTokenGuardWhenOpenShiftReaderExists(t *testing.T) {
-	result, err := CheckClusterServiceAccountIssuerHandoff(
+func TestCheckTokenIssuerHandoffSkipsTokenGuardWhenOpenShiftReaderExists(t *testing.T) {
+	result, err := CheckTokenIssuerHandoff(
 		context.Background(),
 		guardTestIssuer(guardTestIssuerURL),
 		nil,
@@ -115,19 +115,19 @@ func TestCheckClusterServiceAccountIssuerHandoffSkipsTokenGuardWhenOpenShiftRead
 	)
 
 	if err != nil {
-		t.Fatalf("CheckClusterServiceAccountIssuerHandoff returned error: %v", err)
+		t.Fatalf("CheckTokenIssuerHandoff returned error: %v", err)
 	}
 	if result.Blocked || result.CheckFailed {
 		t.Fatalf("expected empty result, got %#v", result)
 	}
 }
 
-func TestCheckClusterServiceAccountIssuerHandoffBlocksWhenTokenIssuerMatches(t *testing.T) {
+func TestCheckTokenIssuerHandoffBlocksWhenTokenIssuerMatches(t *testing.T) {
 	tokens := &fakeServiceAccountTokenIssuer{currentIssuer: guardTestIssuerURL}
-	result, err := CheckClusterServiceAccountIssuerHandoff(context.Background(), guardTestIssuer(guardTestIssuerURL), tokens, nil)
+	result, err := CheckTokenIssuerHandoff(context.Background(), guardTestIssuer(guardTestIssuerURL), tokens, nil)
 
 	if err != nil {
-		t.Fatalf("CheckClusterServiceAccountIssuerHandoff returned error: %v", err)
+		t.Fatalf("CheckTokenIssuerHandoff returned error: %v", err)
 	}
 	if !result.Blocked {
 		t.Fatal("expected deletion to be blocked")
@@ -140,12 +140,12 @@ func TestCheckClusterServiceAccountIssuerHandoffBlocksWhenTokenIssuerMatches(t *
 	}
 }
 
-func TestCheckClusterServiceAccountIssuerHandoffAllowsTokenIssuerHandoff(t *testing.T) {
+func TestCheckTokenIssuerHandoffAllowsTokenIssuerHandoff(t *testing.T) {
 	tokens := &fakeServiceAccountTokenIssuer{currentIssuer: "https://issuer.example"}
-	result, err := CheckClusterServiceAccountIssuerHandoff(context.Background(), guardTestIssuer(guardTestIssuerURL), tokens, nil)
+	result, err := CheckTokenIssuerHandoff(context.Background(), guardTestIssuer(guardTestIssuerURL), tokens, nil)
 
 	if err != nil {
-		t.Fatalf("CheckClusterServiceAccountIssuerHandoff returned error: %v", err)
+		t.Fatalf("CheckTokenIssuerHandoff returned error: %v", err)
 	}
 	if result.Blocked || result.CheckFailed {
 		t.Fatalf("expected empty result, got %#v", result)
@@ -155,9 +155,9 @@ func TestCheckClusterServiceAccountIssuerHandoffAllowsTokenIssuerHandoff(t *test
 	}
 }
 
-func TestCheckClusterServiceAccountIssuerHandoffReportsTokenReadError(t *testing.T) {
+func TestCheckTokenIssuerHandoffReportsTokenReadError(t *testing.T) {
 	readErr := errors.New("token request forbidden")
-	result, err := CheckClusterServiceAccountIssuerHandoff(
+	result, err := CheckTokenIssuerHandoff(
 		context.Background(),
 		guardTestIssuer(guardTestIssuerURL),
 		&fakeServiceAccountTokenIssuer{err: readErr},
@@ -165,7 +165,7 @@ func TestCheckClusterServiceAccountIssuerHandoffReportsTokenReadError(t *testing
 	)
 
 	if err != nil {
-		t.Fatalf("CheckClusterServiceAccountIssuerHandoff returned error: %v", err)
+		t.Fatalf("CheckTokenIssuerHandoff returned error: %v", err)
 	}
 	if !result.CheckFailed {
 		t.Fatal("expected check failure")
@@ -181,12 +181,12 @@ func TestCheckClusterServiceAccountIssuerHandoffReportsTokenReadError(t *testing
 	}
 }
 
-func TestCheckOpenShiftServiceAccountIssuerHandoffBlocksWhenIssuerMatches(t *testing.T) {
+func TestCheckOpenShiftIssuerHandoffBlocksWhenIssuerMatches(t *testing.T) {
 	openShift := &fakeOpenShiftServiceAccountIssuer{currentIssuer: guardTestIssuerURL}
-	result, err := CheckOpenShiftServiceAccountIssuerHandoff(context.Background(), guardTestIssuer(guardTestIssuerURL), openShift)
+	result, err := CheckOpenShiftIssuerHandoff(context.Background(), guardTestIssuer(guardTestIssuerURL), openShift)
 
 	if err != nil {
-		t.Fatalf("CheckOpenShiftServiceAccountIssuerHandoff returned error: %v", err)
+		t.Fatalf("CheckOpenShiftIssuerHandoff returned error: %v", err)
 	}
 	if !result.Blocked {
 		t.Fatal("expected deletion to be blocked")
@@ -199,12 +199,12 @@ func TestCheckOpenShiftServiceAccountIssuerHandoffBlocksWhenIssuerMatches(t *tes
 	}
 }
 
-func TestCheckOpenShiftServiceAccountIssuerHandoffAllowsIssuerHandoff(t *testing.T) {
+func TestCheckOpenShiftIssuerHandoffAllowsIssuerHandoff(t *testing.T) {
 	openShift := &fakeOpenShiftServiceAccountIssuer{currentIssuer: "https://issuer.example"}
-	result, err := CheckOpenShiftServiceAccountIssuerHandoff(context.Background(), guardTestIssuer(guardTestIssuerURL), openShift)
+	result, err := CheckOpenShiftIssuerHandoff(context.Background(), guardTestIssuer(guardTestIssuerURL), openShift)
 
 	if err != nil {
-		t.Fatalf("CheckOpenShiftServiceAccountIssuerHandoff returned error: %v", err)
+		t.Fatalf("CheckOpenShiftIssuerHandoff returned error: %v", err)
 	}
 	if result.Blocked || result.CheckFailed {
 		t.Fatalf("expected empty result, got %#v", result)

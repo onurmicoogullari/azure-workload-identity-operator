@@ -31,7 +31,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/onurmicoogullari/az-workload-identity-operator/test/utils"
+	testutil "github.com/onurmicoogullari/az-workload-identity-operator/test/utils"
 )
 
 // namespace where the project is deployed in
@@ -55,23 +55,23 @@ var _ = Describe("Manager", Ordered, func() {
 	BeforeAll(func() {
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
+		_, err := testutil.RunInProject(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
 
 		By("labeling the namespace to enforce the restricted security policy")
 		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
 			"pod-security.kubernetes.io/enforce=restricted")
-		_, err = utils.Run(cmd)
+		_, err = testutil.RunInProject(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
+		_, err = testutil.RunInProject(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("deploying the controller-manager")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
-		_, err = utils.Run(cmd)
+		_, err = testutil.RunInProject(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 	})
 
@@ -80,19 +80,19 @@ var _ = Describe("Manager", Ordered, func() {
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
-		_, _ = utils.Run(cmd)
+		_, _ = testutil.RunInProject(cmd)
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
+		_, _ = testutil.RunInProject(cmd)
 
 		By("uninstalling CRDs")
 		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		_, _ = testutil.RunInProject(cmd)
 
 		By("removing manager namespace")
 		cmd = exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
+		_, _ = testutil.RunInProject(cmd)
 	})
 
 	// After each test, check for failures and collect logs, events,
@@ -102,7 +102,7 @@ var _ = Describe("Manager", Ordered, func() {
 		if specReport.Failed() {
 			By("Fetching controller manager pod logs")
 			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-			controllerLogs, err := utils.Run(cmd)
+			controllerLogs, err := testutil.RunInProject(cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
 			} else {
@@ -111,7 +111,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("Fetching Kubernetes events")
 			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
-			eventsOutput, err := utils.Run(cmd)
+			eventsOutput, err := testutil.RunInProject(cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
 			} else {
@@ -120,7 +120,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("Fetching curl-metrics logs")
 			cmd = exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
-			metricsOutput, err := utils.Run(cmd)
+			metricsOutput, err := testutil.RunInProject(cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", metricsOutput)
 			} else {
@@ -129,7 +129,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("Fetching controller manager pod description")
 			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
-			podDescription, err := utils.Run(cmd)
+			podDescription, err := testutil.RunInProject(cmd)
 			if err == nil {
 				fmt.Println("Pod description:\n", podDescription)
 			} else {
@@ -155,9 +155,9 @@ var _ = Describe("Manager", Ordered, func() {
 					"-n", namespace,
 				)
 
-				podOutput, err := utils.Run(cmd)
+				podOutput, err := testutil.RunInProject(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
-				podNames := utils.GetNonEmptyLines(podOutput)
+				podNames := testutil.NonEmptyLines(podOutput)
 				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
 				controllerPodName = podNames[0]
 				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
@@ -167,7 +167,7 @@ var _ = Describe("Manager", Ordered, func() {
 					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
 					"-n", namespace,
 				)
-				output, err := utils.Run(cmd)
+				output, err := testutil.RunInProject(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Running"), "Incorrect controller-manager pod status")
 			}
@@ -180,12 +180,12 @@ var _ = Describe("Manager", Ordered, func() {
 				"--clusterrole=az-workload-identity-operator-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
-			_, err := utils.Run(cmd)
+			_, err := testutil.RunInProject(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
 
 			By("validating that the metrics service is available")
 			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
-			_, err = utils.Run(cmd)
+			_, err = testutil.RunInProject(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
 			By("getting the service account token")
@@ -197,7 +197,7 @@ var _ = Describe("Manager", Ordered, func() {
 			verifyControllerPodReady := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "pod", controllerPodName, "-n", namespace,
 					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
-				output, err := utils.Run(cmd)
+				output, err := testutil.RunInProject(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("True"), "Controller pod not ready")
 			}
@@ -206,7 +206,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("verifying that the controller manager is serving the metrics server")
 			verifyMetricsServerStarted := func(g Gomega) {
 				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-				output, err := utils.Run(cmd)
+				output, err := testutil.RunInProject(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("Serving metrics server"),
 					"Metrics server not yet started")
@@ -245,7 +245,7 @@ var _ = Describe("Manager", Ordered, func() {
 						"serviceAccountName": "%s"
 					}
 				}`, token, metricsServiceName, namespace, serviceAccountName))
-			_, err = utils.Run(cmd)
+			_, err = testutil.RunInProject(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
 
 			By("waiting for the curl-metrics pod to complete.")
@@ -253,7 +253,7 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "pods", "curl-metrics",
 					"-o", "jsonpath={.status.phase}",
 					"-n", namespace)
-				output, err := utils.Run(cmd)
+				output, err := testutil.RunInProject(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Succeeded"), "curl pod in wrong status")
 			}
@@ -275,37 +275,37 @@ var _ = Describe("Manager", Ordered, func() {
 			DeferCleanup(func() {
 				cmd := exec.Command("kubectl", "delete", "workloadidentity", "e2e-blocking-workload",
 					"-n", "default", "--ignore-not-found", "--timeout=2m")
-				_, _ = utils.Run(cmd)
+				_, _ = testutil.RunInProject(cmd)
 
 				cmd = exec.Command("kubectl", "delete", "oidcissuer", "default", "--ignore-not-found", "--timeout=2m")
-				_, _ = utils.Run(cmd)
+				_, _ = testutil.RunInProject(cmd)
 			})
 
 			By("creating an OIDCIssuer and WorkloadIdentity")
 			cmd := exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(e2eOIDCIssuerYAML + "\n---\n" + e2eWorkloadIdentityYAML)
-			_, err := utils.Run(cmd)
+			_, err := testutil.RunInProject(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying deletion is rejected before the OIDCIssuer enters deletion")
 			cmd = exec.Command("kubectl", "delete", "oidcissuer", "default")
-			output, err := utils.Run(cmd)
+			output, err := testutil.RunInProject(cmd)
 			Expect(err).To(HaveOccurred())
 			Expect(output + err.Error()).To(ContainSubstring("OIDCIssuer deletion is blocked"))
 
 			cmd = exec.Command("kubectl", "get", "oidcissuer", "default", "-o", "jsonpath={.metadata.deletionTimestamp}")
-			output, err = utils.Run(cmd)
+			output, err = testutil.RunInProject(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(BeEmpty())
 
 			By("deleting the WorkloadIdentity so OIDCIssuer cleanup can proceed")
 			cmd = exec.Command("kubectl", "delete", "workloadidentity", "e2e-blocking-workload",
 				"-n", "default", "--timeout=2m")
-			_, err = utils.Run(cmd)
+			_, err = testutil.RunInProject(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			cmd = exec.Command("kubectl", "delete", "oidcissuer", "default", "--timeout=2m")
-			_, err = utils.Run(cmd)
+			_, err = testutil.RunInProject(cmd)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -368,7 +368,7 @@ func serviceAccountToken() (string, error) {
 func getMetricsOutput() (string, error) {
 	By("getting the curl-metrics logs")
 	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
-	return utils.Run(cmd)
+	return testutil.RunInProject(cmd)
 }
 
 func waitForValidatingWebhook() {
@@ -377,7 +377,7 @@ func waitForValidatingWebhook() {
 		cmd := exec.Command("kubectl", "get", "endpointslices.discovery.k8s.io", "-n", namespace,
 			"-l", "kubernetes.io/service-name=az-workload-identity-operator-webhook-service",
 			"-o", "jsonpath={range .items[*]}{range .endpoints[*]}{.addresses[*]}{end}{end}")
-		output, err := utils.Run(cmd)
+		output, err := testutil.RunInProject(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "Webhook endpoints should exist")
 		g.Expect(output).ShouldNot(BeEmpty(), "Webhook endpoints not yet ready")
 	}, 3*time.Minute, time.Second).Should(Succeed())
@@ -387,7 +387,7 @@ func waitForValidatingWebhook() {
 		cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations.admissionregistration.k8s.io",
 			"az-workload-identity-operator-validating-webhook-configuration",
 			"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
-		output, err := utils.Run(cmd)
+		output, err := testutil.RunInProject(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "ValidatingWebhookConfiguration should exist")
 		g.Expect(output).ShouldNot(BeEmpty(), "Validating webhook CA bundle not yet injected")
 	}, 3*time.Minute, time.Second).Should(Succeed())

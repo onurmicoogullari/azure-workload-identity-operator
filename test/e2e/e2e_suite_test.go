@@ -28,7 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/onurmicoogullari/az-workload-identity-operator/test/utils"
+	testutil "github.com/onurmicoogullari/az-workload-identity-operator/test/utils"
 )
 
 var (
@@ -53,13 +53,13 @@ func TestE2E(t *testing.T) {
 var _ = BeforeSuite(func() {
 	By("building the manager image")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
-	_, err := utils.Run(cmd)
+	_, err := testutil.RunInProject(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
 
 	// TODO(user): If you want to change the e2e test vendor from Kind,
 	// ensure the image is built and available, then remove the following block.
 	By("loading the manager image on Kind")
-	err = utils.LoadImageToKindClusterWithName(managerImage)
+	err = testutil.LoadImageToKindCluster(managerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
 
 	configureKubectlKubeRC()
@@ -94,7 +94,7 @@ func setupCertManager() {
 	}
 
 	By("checking if CertManager is already installed")
-	if utils.IsCertManagerCRDsInstalled() {
+	if testutil.CertManagerCRDsInstalled() {
 		_, _ = fmt.Fprintf(GinkgoWriter, "CertManager is already installed. Skipping installation.\n")
 		return
 	}
@@ -103,7 +103,7 @@ func setupCertManager() {
 	shouldCleanupCertManager = true
 
 	By("installing CertManager")
-	Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
+	Expect(testutil.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
 }
 
 // teardownCertManager uninstalls CertManager if it was installed by setupCertManager.
@@ -115,5 +115,5 @@ func teardownCertManager() {
 	}
 
 	By("uninstalling CertManager")
-	utils.UninstallCertManager()
+	testutil.UninstallCertManager()
 }

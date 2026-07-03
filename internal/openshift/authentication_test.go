@@ -107,9 +107,9 @@ func TestAuthenticationAPIAvailableWhenMissing(t *testing.T) {
 func TestServiceAccountIssuerClientWaitForKubeAPIServerRollout(t *testing.T) {
 	changedAfter := time.Date(2026, 6, 30, 8, 0, 0, 0, time.UTC)
 	rolledOutAt := metav1.NewTime(changedAfter.Add(time.Minute))
-	operators := make([]client.Object, 0, 1+len(serviceAccountIssuerClusterOperators))
+	operators := make([]client.Object, 0, 1+len(serviceAccountIssuerDependentOperators))
 	operators = append(operators, healthyClusterOperator("kube-apiserver", rolledOutAt))
-	for _, name := range serviceAccountIssuerClusterOperators {
+	for _, name := range serviceAccountIssuerDependentOperators {
 		operators = append(operators, healthyClusterOperator(name, metav1.NewTime(changedAfter.Add(-time.Hour))))
 	}
 	c := fakeOpenShiftClient(t, operators...)

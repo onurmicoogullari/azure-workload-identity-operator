@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package utils
+package testutil
 
 import (
 	"bufio"
@@ -39,9 +39,9 @@ func warnError(err error) {
 	_, _ = fmt.Fprintf(GinkgoWriter, "warning: %v\n", err)
 }
 
-// Run executes the provided command within this context
-func Run(cmd *exec.Cmd) (string, error) {
-	dir, _ := GetProjectDir()
+// RunInProject executes the provided command from the project directory.
+func RunInProject(cmd *exec.Cmd) (string, error) {
+	dir, _ := ProjectDir()
 	cmd.Dir = dir
 
 	if err := os.Chdir(cmd.Dir); err != nil {
@@ -63,7 +63,7 @@ func Run(cmd *exec.Cmd) (string, error) {
 func UninstallCertManager() {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
 	cmd := exec.Command("kubectl", "delete", "-f", url)
-	if _, err := Run(cmd); err != nil {
+	if _, err := RunInProject(cmd); err != nil {
 		warnError(err)
 	}
 
@@ -75,7 +75,7 @@ func UninstallCertManager() {
 	for _, lease := range kubeSystemLeases {
 		cmd = exec.Command("kubectl", "delete", "lease", lease,
 			"-n", "kube-system", "--ignore-not-found", "--force", "--grace-period=0")
-		if _, err := Run(cmd); err != nil {
+		if _, err := RunInProject(cmd); err != nil {
 			warnError(err)
 		}
 	}
@@ -85,7 +85,7 @@ func UninstallCertManager() {
 func InstallCertManager() error {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
 	cmd := exec.Command("kubectl", "apply", "-f", url)
-	if _, err := Run(cmd); err != nil {
+	if _, err := RunInProject(cmd); err != nil {
 		return err
 	}
 	// Wait for cert-manager-webhook to be ready, which can take time if cert-manager
@@ -96,13 +96,13 @@ func InstallCertManager() error {
 		"--timeout", "5m",
 	)
 
-	_, err := Run(cmd)
+	_, err := RunInProject(cmd)
 	return err
 }
 
-// IsCertManagerCRDsInstalled checks if any Cert Manager CRDs are installed
+// CertManagerCRDsInstalled checks if any Cert Manager CRDs are installed
 // by verifying the existence of key CRDs related to Cert Manager.
-func IsCertManagerCRDsInstalled() bool {
+func CertManagerCRDsInstalled() bool {
 	// List of common Cert Manager CRDs
 	certManagerCRDs := []string{
 		"certificates.cert-manager.io",
@@ -115,13 +115,13 @@ func IsCertManagerCRDsInstalled() bool {
 
 	// Execute the kubectl command to get all CRDs
 	cmd := exec.Command("kubectl", "get", "crds")
-	output, err := Run(cmd)
+	output, err := RunInProject(cmd)
 	if err != nil {
 		return false
 	}
 
 	// Check if any of the Cert Manager CRDs are present
-	crdList := GetNonEmptyLines(output)
+	crdList := NonEmptyLines(output)
 	for _, crd := range certManagerCRDs {
 		for _, line := range crdList {
 			if strings.Contains(line, crd) {
@@ -133,8 +133,8 @@ func IsCertManagerCRDsInstalled() bool {
 	return false
 }
 
-// LoadImageToKindClusterWithName loads a local docker image to the kind cluster
-func LoadImageToKindClusterWithName(name string) error {
+// LoadImageToKindCluster loads a local docker image to the kind cluster.
+func LoadImageToKindCluster(name string) error {
 	cluster := defaultKindCluster
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
@@ -145,13 +145,13 @@ func LoadImageToKindClusterWithName(name string) error {
 		kindBinary = v
 	}
 	cmd := exec.Command(kindBinary, kindOptions...)
-	_, err := Run(cmd)
+	_, err := RunInProject(cmd)
 	return err
 }
 
-// GetNonEmptyLines converts given command output string into individual objects
+// NonEmptyLines converts given command output string into individual objects
 // according to line breakers, and ignores the empty elements in it.
-func GetNonEmptyLines(output string) []string {
+func NonEmptyLines(output string) []string {
 	var res []string
 	elements := strings.SplitSeq(output, "\n")
 	for element := range elements {
@@ -163,8 +163,8 @@ func GetNonEmptyLines(output string) []string {
 	return res
 }
 
-// GetProjectDir will return the directory where the project is
-func GetProjectDir() (string, error) {
+// ProjectDir returns the project directory.
+func ProjectDir() (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return wd, fmt.Errorf("failed to get current working directory: %w", err)

@@ -48,8 +48,8 @@ const (
 	openshiftAuthenticationName            = "cluster"
 )
 
-// OpenShiftServiceAccountIssuerClient reads and writes the OpenShift service account issuer.
-type OpenShiftServiceAccountIssuerClient interface {
+// OpenShiftServiceAccountIssuerManager manages the OpenShift service account issuer.
+type OpenShiftServiceAccountIssuerManager interface {
 	Get(ctx context.Context) (string, error)
 	Set(ctx context.Context, issuerURL string) (bool, error)
 	WaitForKubeAPIServerRollout(ctx context.Context, changedAfter time.Time) error
@@ -65,7 +65,7 @@ type OIDCIssuerReconciler struct {
 	client.Client
 	Scheme                        *runtime.Scheme
 	Publisher                     oidc.Publisher
-	OpenShiftServiceAccountIssuer OpenShiftServiceAccountIssuerClient
+	OpenShiftServiceAccountIssuer OpenShiftServiceAccountIssuerManager
 	ServiceAccountTokens          ServiceAccountTokenClient
 	SigningKeyRefreshInterval     time.Duration
 }
@@ -156,7 +156,7 @@ func (r *OIDCIssuerReconciler) reconcileDelete(ctx context.Context, issuer *azwo
 		return ctrl.Result{}, r.setNotReady(ctx, issuer, result.Reason, result.Message)
 	}
 
-	result, err = oidcissuer.CheckClusterServiceAccountIssuerHandoff(ctx, issuer, r.ServiceAccountTokens, r.OpenShiftServiceAccountIssuer)
+	result, err = oidcissuer.CheckTokenIssuerHandoff(ctx, issuer, r.ServiceAccountTokens, r.OpenShiftServiceAccountIssuer)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -179,7 +179,7 @@ func (r *OIDCIssuerReconciler) reconcileDelete(ctx context.Context, issuer *azwo
 		return ctrl.Result{RequeueAfter: defaultServiceAccountIssuerCheckPeriod}, nil
 	}
 
-	result, err = oidcissuer.CheckOpenShiftServiceAccountIssuerHandoff(ctx, issuer, r.OpenShiftServiceAccountIssuer)
+	result, err = oidcissuer.CheckOpenShiftIssuerHandoff(ctx, issuer, r.OpenShiftServiceAccountIssuer)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

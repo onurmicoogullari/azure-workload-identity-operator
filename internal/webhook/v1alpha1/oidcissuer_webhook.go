@@ -35,10 +35,10 @@ const blockingWorkloadIdentityReferenceLimit = 5
 
 // nolint:unused
 // log is for logging in this package.
-var oidcissuerlog = logf.Log.WithName("oidcissuer-resource")
+var oidcIssuerLog = logf.Log.WithName("oidcissuer-resource")
 
 // SetupOIDCIssuerWebhookWithManager registers the webhook for OIDCIssuer in the manager.
-func SetupOIDCIssuerWebhookWithManager(mgr ctrl.Manager, openShiftServiceAccountIssuer openShiftServiceAccountIssuerGetter, serviceAccountTokens serviceAccountTokenClient) error {
+func SetupOIDCIssuerWebhookWithManager(mgr ctrl.Manager, openShiftServiceAccountIssuer oidcissuer.OpenShiftServiceAccountIssuerReader, serviceAccountTokens oidcissuer.ServiceAccountTokenIssuerReader) error {
 	return ctrl.NewWebhookManagedBy(mgr, &workloadidentityv1alpha1.OIDCIssuer{}).
 		WithValidator(&OIDCIssuerValidator{
 			Client:                        mgr.GetAPIReader(),
@@ -57,33 +57,25 @@ func SetupOIDCIssuerWebhookWithManager(mgr ctrl.Manager, openShiftServiceAccount
 // as this struct is used only for temporary operations and does not need to be deeply copied.
 type OIDCIssuerValidator struct {
 	Client                        client.Reader
-	OpenShiftServiceAccountIssuer openShiftServiceAccountIssuerGetter
-	ServiceAccountTokens          serviceAccountTokenClient
-}
-
-type openShiftServiceAccountIssuerGetter interface {
-	Get(ctx context.Context) (string, error)
-}
-
-type serviceAccountTokenClient interface {
-	CurrentIssuer(ctx context.Context) (string, error)
+	OpenShiftServiceAccountIssuer oidcissuer.OpenShiftServiceAccountIssuerReader
+	ServiceAccountTokens          oidcissuer.ServiceAccountTokenIssuerReader
 }
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type OIDCIssuer.
 func (v *OIDCIssuerValidator) ValidateCreate(_ context.Context, obj *workloadidentityv1alpha1.OIDCIssuer) (admission.Warnings, error) {
-	oidcissuerlog.Info("Validation for OIDCIssuer upon creation", "name", obj.GetName())
+	oidcIssuerLog.Info("Validation for OIDCIssuer upon creation", "name", obj.GetName())
 	return nil, nil
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type OIDCIssuer.
 func (v *OIDCIssuerValidator) ValidateUpdate(_ context.Context, oldObj, newObj *workloadidentityv1alpha1.OIDCIssuer) (admission.Warnings, error) {
-	oidcissuerlog.Info("Validation for OIDCIssuer upon update", "name", newObj.GetName())
+	oidcIssuerLog.Info("Validation for OIDCIssuer upon update", "name", newObj.GetName())
 	return nil, nil
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type OIDCIssuer.
 func (v *OIDCIssuerValidator) ValidateDelete(ctx context.Context, obj *workloadidentityv1alpha1.OIDCIssuer) (admission.Warnings, error) {
-	oidcissuerlog.Info("Validation for OIDCIssuer upon deletion", "name", obj.GetName())
+	oidcIssuerLog.Info("Validation for OIDCIssuer upon deletion", "name", obj.GetName())
 	if obj.GetName() != workloadidentityv1alpha1.OIDCIssuerName {
 		return nil, nil
 	}
@@ -96,11 +88,11 @@ func (v *OIDCIssuerValidator) ValidateDelete(ctx context.Context, obj *workloadi
 		return nil, err
 	}
 	if result.Blocked {
-		oidcissuerlog.Info("Rejected OIDCIssuer deletion because WorkloadIdentities still exist", "count", result.WorkloadIdentityCount)
+		oidcIssuerLog.Info("Rejected OIDCIssuer deletion because WorkloadIdentities still exist", "count", result.WorkloadIdentityCount)
 		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), result.Message)
 	}
 
-	result, err = oidcissuer.CheckClusterServiceAccountIssuerHandoff(ctx, obj, v.ServiceAccountTokens, v.OpenShiftServiceAccountIssuer)
+	result, err = oidcissuer.CheckTokenIssuerHandoff(ctx, obj, v.ServiceAccountTokens, v.OpenShiftServiceAccountIssuer)
 	if err != nil {
 		return nil, err
 	}
@@ -109,17 +101,17 @@ func (v *OIDCIssuerValidator) ValidateDelete(ctx context.Context, obj *workloadi
 	}
 	if result.Blocked {
 		if result.Reason == oidcissuer.ReasonBlockedByClusterServiceAccountIssuer {
-			oidcissuerlog.Info("Rejected OIDCIssuer deletion because the cluster still mints service account tokens with its issuer URL", "issuerURL", obj.Status.IssuerURL)
+			oidcIssuerLog.Info("Rejected OIDCIssuer deletion because the cluster still mints service account tokens with its issuer URL", "issuerURL", obj.Status.IssuerURL)
 		}
 		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), result.Message)
 	}
 
-	result, err = oidcissuer.CheckOpenShiftServiceAccountIssuerHandoff(ctx, obj, v.OpenShiftServiceAccountIssuer)
+	result, err = oidcissuer.CheckOpenShiftIssuerHandoff(ctx, obj, v.OpenShiftServiceAccountIssuer)
 	if err != nil {
 		return nil, err
 	}
 	if result.Blocked {
-		oidcissuerlog.Info("Rejected OIDCIssuer deletion because OpenShift still uses its issuer URL", "issuerURL", obj.Status.IssuerURL)
+		oidcIssuerLog.Info("Rejected OIDCIssuer deletion because OpenShift still uses its issuer URL", "issuerURL", obj.Status.IssuerURL)
 		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), result.Message)
 	}
 	return nil, nil
