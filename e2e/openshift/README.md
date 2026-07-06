@@ -105,11 +105,14 @@ The test covers the full local integration path:
    Azure environment into the test Job.
 8. The test Job exchanges the OpenShift service-account token for Azure
    credentials and reads a real Key Vault secret.
-9. The OIDCIssuer validating webhook rejects deletion while the
+9. The WorkloadIdentity periodic reconcile notices a mutated Azure federated
+   credential without a `WorkloadIdentity` spec change, then restores the
+   expected issuer, subject, and audience.
+10. The OIDCIssuer validating webhook rejects deletion while the
    `WorkloadIdentity` still exists, before the resource enters deletion.
-10. After the `WorkloadIdentity` is deleted, the OIDCIssuer validating webhook
+11. After the `WorkloadIdentity` is deleted, the OIDCIssuer validating webhook
    rejects deletion while OpenShift still references the issuer URL.
-11. The script performs the manual OpenShift service-account issuer handoff, then
+12. The script performs the manual OpenShift service-account issuer handoff, then
    deletes the `OIDCIssuer` and verifies the operator removes the
    OIDCIssuer-created Azure resources.
 
@@ -135,9 +138,10 @@ Script output is grouped under these numbered steps.
 16. Upload a real Key Vault secret and assign read access.
 17. Build and run the OpenShift Job.
 18. Verify the Job reads the Key Vault secret using workload identity.
-19. Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.
-20. During cleanup, verify deletion is also rejected while OpenShift still references the issuer.
-21. Restore OpenShift issuer, delete resources, and verify Azure cleanup.
+19. Mutate Azure federated credential and verify WorkloadIdentity periodic reconcile repairs it.
+20. Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.
+21. During cleanup, verify deletion is also rejected while OpenShift still references the issuer.
+22. Restore OpenShift issuer, delete resources, and verify Azure cleanup.
 
 ## Cleanup
 

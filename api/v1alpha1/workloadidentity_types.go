@@ -108,6 +108,10 @@ type WorkloadIdentityStatus struct {
 	// +optional
 	Subject string `json:"subject,omitempty"`
 
+	// serviceAccountUID is the UID of the ServiceAccount instance last reconciled by the controller.
+	// +optional
+	ServiceAccountUID string `json:"serviceAccountUID,omitempty"`
+
 	// observedGeneration is the latest generation reconciled by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`

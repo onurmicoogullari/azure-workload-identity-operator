@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -320,11 +321,11 @@ func (r *OIDCIssuerReconciler) oidcIssuerForAuthentication(_ context.Context, ob
 }
 
 func (r *OIDCIssuerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	builder := ctrl.NewControllerManagedBy(mgr).
-		For(&azworkloadidentityv1alpha1.OIDCIssuer{}).
-		Watches(&azworkloadidentityv1alpha1.WorkloadIdentity{}, handler.EnqueueRequestsFromMapFunc(r.oidcIssuerForWorkloadIdentity))
+	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
+		For(&azworkloadidentityv1alpha1.OIDCIssuer{}, builder.WithPredicates(primaryResourcePredicate())).
+		Watches(&azworkloadidentityv1alpha1.WorkloadIdentity{}, handler.EnqueueRequestsFromMapFunc(r.oidcIssuerForWorkloadIdentity), builder.WithPredicates(createDeleteOnlyPredicate()))
 	if r.OpenShiftServiceAccountIssuer != nil {
-		builder = builder.Watches(&configv1.Authentication{}, handler.EnqueueRequestsFromMapFunc(r.oidcIssuerForAuthentication))
+		controllerBuilder = controllerBuilder.Watches(&configv1.Authentication{}, handler.EnqueueRequestsFromMapFunc(r.oidcIssuerForAuthentication))
 	}
-	return builder.Named("oidcissuer").Complete(r)
+	return controllerBuilder.Named("oidcissuer").Complete(r)
 }

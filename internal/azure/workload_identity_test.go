@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
@@ -136,6 +137,29 @@ func TestFederatedIdentityCredentialMatchesStatus(t *testing.T) {
 	identity.Status.Subject = ""
 	if federatedIdentityCredentialMatchesStatus(identity, matching) {
 		t.Fatal("expected credential not to match empty status")
+	}
+}
+
+func TestFederatedIdentityCredentialRecordedInStatus(t *testing.T) {
+	identity := testWorkloadIdentity()
+	credentialID := "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-wi-test/providers/Microsoft.ManagedIdentity/userAssignedIdentities/uami-test/federatedIdentityCredentials/fic-test"
+	credential := armmsi.FederatedIdentityCredential{ID: to.Ptr(credentialID)}
+
+	if federatedIdentityCredentialRecordedInStatus(identity, credential) {
+		t.Fatal("expected credential not to be recorded before status contains Azure resource")
+	}
+
+	identity.Status.AzureResources = []azworkloadidentityv1alpha1.AzureResource{{
+		ID:   credentialID,
+		Kind: azureResourceKindFederatedIdentityCredential,
+	}}
+	if !federatedIdentityCredentialRecordedInStatus(identity, armmsi.FederatedIdentityCredential{ID: to.Ptr(strings.ToUpper(credentialID))}) {
+		t.Fatal("expected credential ID recorded in status to match case-insensitively")
+	}
+
+	identity.Status.AzureResources[0].Kind = "UserAssignedIdentity"
+	if federatedIdentityCredentialRecordedInStatus(identity, credential) {
+		t.Fatal("expected resource kind to be required")
 	}
 }
 

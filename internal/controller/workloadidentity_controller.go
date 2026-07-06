@@ -20,7 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"maps"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -30,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -40,25 +43,32 @@ import (
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 )
 
-const workloadIdentityFinalizer = "workloadidentity.azure.micosolutions.se/workloadidentity-finalizer"
+const (
+	workloadIdentityFinalizer               = "workloadidentity.azure.micosolutions.se/workloadidentity-finalizer"
+	workloadIdentityServiceAccountNameIndex = "workloadidentity.spec.serviceAccount.name"
+	workloadIdentityUIDIndex                = "workloadidentity.metadata.uid"
+)
 
 const (
-	serviceAccountUseLabel       = "azure.workload.identity/use"
-	serviceAccountClientID       = "azure.workload.identity/client-id"
-	serviceAccountTenantID       = "azure.workload.identity/tenant-id"
-	serviceAccountManagedBy      = "workloadidentity.azure.micosolutions.se/managed-by"
-	serviceAccountUID            = "workloadidentity.azure.micosolutions.se/workload-identity-uid"
-	serviceAccountCreatedBy      = "workloadidentity.azure.micosolutions.se/created-by-operator"
-	serviceAccountManagerName    = "azure-workload-identity-operator"
-	serviceAccountSubjectPattern = "system:serviceaccount:%s:%s"
-	trueValue                    = "true"
+	// DefaultWorkloadIdentityRefreshInterval is the default interval for revalidating Azure resources and ServiceAccounts.
+	DefaultWorkloadIdentityRefreshInterval = 5 * time.Minute
+	serviceAccountUseLabel                 = "azure.workload.identity/use"
+	serviceAccountClientID                 = "azure.workload.identity/client-id"
+	serviceAccountTenantID                 = "azure.workload.identity/tenant-id"
+	serviceAccountManagedBy                = "workloadidentity.azure.micosolutions.se/managed-by"
+	serviceAccountUID                      = "workloadidentity.azure.micosolutions.se/workload-identity-uid"
+	serviceAccountCreatedBy                = "workloadidentity.azure.micosolutions.se/created-by-operator"
+	serviceAccountManagerName              = "azure-workload-identity-operator"
+	serviceAccountSubjectPattern           = "system:serviceaccount:%s:%s"
+	trueValue                              = "true"
 )
 
 // WorkloadIdentityReconciler reconciles a WorkloadIdentity object.
 type WorkloadIdentityReconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	Manager workloadidentity.Manager
+	Scheme          *runtime.Scheme
+	Manager         workloadidentity.Manager
+	RefreshInterval time.Duration
 }
 
 // +kubebuilder:rbac:groups=workloadidentity.azure.micosolutions.se,resources=workloadidentities,verbs=get;list;watch;create;update;patch;delete
@@ -79,7 +89,7 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	if !identity.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.reconcileWorkloadIdentityDelete(ctx, identity)
+		return r.reconcileWorkloadIdentityDelete(ctx, identity)
 	}
 
 	if !controllerutil.ContainsFinalizer(identity, workloadIdentityFinalizer) {
@@ -132,7 +142,8 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	if err := r.ensureServiceAccount(ctx, identity, managed); err != nil {
+	serviceAccount, err := r.ensureServiceAccount(ctx, identity, managed)
+	if err != nil {
 		log.Error(err, "Failed to ensure ServiceAccount")
 		reason := "ServiceAccountEnsureFailed"
 		if isServiceAccountConflict(err) {
@@ -145,54 +156,190 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, r.setWorkloadIdentityReady(ctx, identity, issuer.Status.IssuerURL, subject, managed)
+	if err := r.setWorkloadIdentityReady(ctx, identity, issuer.Status.IssuerURL, subject, string(serviceAccount.UID), managed); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{RequeueAfter: r.refreshInterval(identity)}, nil
 }
 
-func (r *WorkloadIdentityReconciler) reconcileWorkloadIdentityDelete(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) error {
+func (r *WorkloadIdentityReconciler) refreshInterval(identity *azworkloadidentityv1alpha1.WorkloadIdentity) time.Duration {
+	interval := DefaultWorkloadIdentityRefreshInterval
+	if r.RefreshInterval > 0 {
+		interval = r.RefreshInterval
+	}
+	return jitteredWorkloadIdentityRefreshInterval(interval, string(identity.UID))
+}
+
+func jitteredWorkloadIdentityRefreshInterval(interval time.Duration, key string) time.Duration {
+	if interval <= 0 || key == "" {
+		return interval
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(key))
+	maxJitter := interval / 10
+	maxHash := uint64(^uint32(0))
+	hashValue := uint64(hash.Sum32())
+	jitterNanos := uint64(maxJitter)/maxHash*hashValue + uint64(maxJitter)%maxHash*hashValue/maxHash
+	jitter := time.Duration(jitterNanos)
+	return interval + jitter
+}
+
+func (r *WorkloadIdentityReconciler) reconcileWorkloadIdentityDelete(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(identity, workloadIdentityFinalizer) {
-		return nil
+		return ctrl.Result{}, nil
 	}
 
 	if identity.Spec.DeletionPolicy == azworkloadidentityv1alpha1.DeletionPolicyDelete {
 		if r.Manager == nil {
-			return fmt.Errorf("azure workload identity manager is not configured")
+			return ctrl.Result{}, fmt.Errorf("azure workload identity manager is not configured")
 		}
-		if err := r.Manager.Delete(ctx, identity); err != nil {
-			return err
+		deleteOptions, waitForPeers, err := r.workloadIdentityDeleteOptions(ctx, identity)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if waitForPeers {
+			logf.FromContext(ctx).Info(
+				"Waiting for terminating WorkloadIdentities that share Azure parents",
+				"resourceGroup", identity.Spec.Azure.ResourceGroupName,
+				"userAssignedIdentity", identity.Spec.Azure.UserAssignedIdentityName,
+				"preserveResourceGroup", deleteOptions.PreserveResourceGroup,
+				"resourceGroupSuccessorUID", deleteOptions.ResourceGroupSuccessorUID,
+				"preserveUserAssignedIdentity", deleteOptions.PreserveUserAssignedIdentity,
+				"userAssignedIdentitySuccessorUID", deleteOptions.UserAssignedIdentitySuccessorUID,
+			)
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
+		logf.FromContext(ctx).Info(
+			"Deleting WorkloadIdentity Azure resources",
+			"preserveResourceGroup", deleteOptions.PreserveResourceGroup,
+			"resourceGroupSuccessorUID", deleteOptions.ResourceGroupSuccessorUID,
+			"preserveUserAssignedIdentity", deleteOptions.PreserveUserAssignedIdentity,
+			"userAssignedIdentitySuccessorUID", deleteOptions.UserAssignedIdentitySuccessorUID,
+		)
+		if dependencyAwareManager, ok := r.Manager.(workloadidentity.DependencyAwareManager); ok {
+			err = dependencyAwareManager.DeleteWithOptions(ctx, identity, deleteOptions)
+		} else {
+			err = r.Manager.Delete(ctx, identity)
+		}
+		if err != nil {
+			return ctrl.Result{}, err
 		}
 		if err := r.deleteServiceAccountIfOwned(ctx, identity); err != nil {
-			return err
+			return ctrl.Result{}, err
 		}
 	}
 
 	controllerutil.RemoveFinalizer(identity, workloadIdentityFinalizer)
-	return r.Update(ctx, identity)
+	return ctrl.Result{}, r.Update(ctx, identity)
 }
 
-func (r *WorkloadIdentityReconciler) ensureServiceAccount(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, managed workloadidentity.ManagedIdentity) error {
+type deletionReference struct {
+	key      string
+	uid      string
+	deleting bool
+}
+
+func (r *WorkloadIdentityReconciler) workloadIdentityDeleteOptions(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) (workloadidentity.DeleteOptions, bool, error) {
+	identities := &azworkloadidentityv1alpha1.WorkloadIdentityList{}
+	if err := r.List(ctx, identities); err != nil {
+		return workloadidentity.DeleteOptions{}, false, fmt.Errorf("list WorkloadIdentities before Azure deletion: %w", err)
+	}
+
+	resourceGroupReferences := make([]deletionReference, 0, len(identities.Items))
+	userAssignedIdentityReferences := make([]deletionReference, 0, len(identities.Items))
+	for i := range identities.Items {
+		other := &identities.Items[i]
+		if other.UID == identity.UID {
+			continue
+		}
+		if !strings.EqualFold(other.Spec.Azure.SubscriptionID, identity.Spec.Azure.SubscriptionID) ||
+			!strings.EqualFold(other.Spec.Azure.ResourceGroupName, identity.Spec.Azure.ResourceGroupName) {
+			continue
+		}
+		reference := deletionReference{key: other.Namespace + "/" + other.Name, uid: string(other.UID), deleting: !other.DeletionTimestamp.IsZero()}
+		resourceGroupReferences = append(resourceGroupReferences, reference)
+		if strings.EqualFold(other.Spec.Azure.UserAssignedIdentityName, identity.Spec.Azure.UserAssignedIdentityName) {
+			userAssignedIdentityReferences = append(userAssignedIdentityReferences, reference)
+		}
+	}
+
+	current := deletionReference{key: identity.Namespace + "/" + identity.Name, uid: string(identity.UID), deleting: true}
+	resourceGroupSuccessor, waitForResourceGroup := deletionSuccessor(current, resourceGroupReferences)
+	userAssignedIdentitySuccessor, waitForUserAssignedIdentity := deletionSuccessor(current, userAssignedIdentityReferences)
+	options := workloadidentity.DeleteOptions{
+		PreserveResourceGroup:            len(resourceGroupReferences) > 0,
+		PreserveUserAssignedIdentity:     len(userAssignedIdentityReferences) > 0,
+		ResourceGroupSuccessorUID:        resourceGroupSuccessor,
+		UserAssignedIdentitySuccessorUID: userAssignedIdentitySuccessor,
+	}
+	return options, waitForResourceGroup || waitForUserAssignedIdentity, nil
+}
+
+func deletionSuccessor(current deletionReference, references []deletionReference) (string, bool) {
+	if len(references) == 0 {
+		return "", false
+	}
+	successor := deletionReference{}
+	for _, reference := range references {
+		if reference.deleting {
+			continue
+		}
+		if successor.key == "" || reference.key < successor.key {
+			successor = reference
+		}
+	}
+	if successor.key != "" {
+		return successor.uid, false
+	}
+
+	coordinator := current
+	for _, reference := range references {
+		if reference.key < coordinator.key {
+			coordinator = reference
+		}
+	}
+	if coordinator.uid == current.uid {
+		return "", true
+	}
+	return coordinator.uid, false
+}
+
+func (r *WorkloadIdentityReconciler) ensureServiceAccount(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, managed workloadidentity.ManagedIdentity) (*corev1.ServiceAccount, error) {
 	key := serviceAccountKey(identity)
 	serviceAccount := &corev1.ServiceAccount{}
 	if err := r.Get(ctx, key, serviceAccount); apierrors.IsNotFound(err) {
 		serviceAccount = &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
 		serviceAccount.Labels = desiredServiceAccountLabels(identity, true)
 		serviceAccount.Annotations = desiredServiceAccountAnnotations(managed)
-		return r.Create(ctx, serviceAccount)
+		if createErr := r.Create(ctx, serviceAccount); createErr != nil {
+			return nil, createErr
+		}
+		return serviceAccount, nil
 	} else if err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := validateServiceAccountOwnership(identity, serviceAccount); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateServiceAccountAnnotations(identity, serviceAccount, managed); err != nil {
-		return err
+		return nil, err
 	}
 
 	original := serviceAccount.DeepCopy()
 	created := serviceAccount.Labels[serviceAccountCreatedBy] == trueValue && serviceAccount.Labels[serviceAccountUID] == string(identity.UID)
-	serviceAccount.Labels = mergeStringMap(serviceAccount.Labels, desiredServiceAccountLabels(identity, created))
-	serviceAccount.Annotations = mergeStringMap(serviceAccount.Annotations, desiredServiceAccountAnnotations(managed))
-	return r.Patch(ctx, serviceAccount, client.MergeFrom(original))
+	desiredLabels := mergeStringMap(serviceAccount.Labels, desiredServiceAccountLabels(identity, created))
+	desiredAnnotations := mergeStringMap(serviceAccount.Annotations, desiredServiceAccountAnnotations(managed))
+	if maps.Equal(serviceAccount.Labels, desiredLabels) && maps.Equal(serviceAccount.Annotations, desiredAnnotations) {
+		return serviceAccount, nil
+	}
+	serviceAccount.Labels = desiredLabels
+	serviceAccount.Annotations = desiredAnnotations
+	if err := r.Patch(ctx, serviceAccount, client.MergeFrom(original)); err != nil {
+		return nil, err
+	}
+	return serviceAccount, nil
 }
 
 func (r *WorkloadIdentityReconciler) validateExistingServiceAccount(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) error {
@@ -204,6 +351,14 @@ func (r *WorkloadIdentityReconciler) validateExistingServiceAccount(ctx context.
 	}
 	if err := validateServiceAccountOwnership(identity, serviceAccount); err != nil {
 		return err
+	}
+	if identity.Status.ServiceAccountUID != "" && identity.Status.ServiceAccountUID != string(serviceAccount.UID) {
+		return newServiceAccountConflict(
+			"ServiceAccount %q was replaced after reconciliation; expected UID %q, got %q",
+			client.ObjectKeyFromObject(serviceAccount).String(),
+			identity.Status.ServiceAccountUID,
+			serviceAccount.UID,
+		)
 	}
 	return validateUnownedServiceAccountAnnotations(identity, serviceAccount)
 }
@@ -304,13 +459,14 @@ func (r *WorkloadIdentityReconciler) deleteServiceAccountIfOwned(ctx context.Con
 	return r.Delete(ctx, serviceAccount)
 }
 
-func (r *WorkloadIdentityReconciler) setWorkloadIdentityReady(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, issuerURL, subject string, managed workloadidentity.ManagedIdentity) error {
+func (r *WorkloadIdentityReconciler) setWorkloadIdentityReady(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, issuerURL, subject, serviceAccountUID string, managed workloadidentity.ManagedIdentity) error {
 	return r.patchWorkloadIdentityStatus(ctx, identity, func(status *azworkloadidentityv1alpha1.WorkloadIdentityStatus) {
 		status.ClientID = managed.ClientID
 		status.PrincipalID = managed.PrincipalID
 		status.TenantID = managed.TenantID
 		status.IssuerURL = issuerURL
 		status.Subject = subject
+		status.ServiceAccountUID = serviceAccountUID
 		status.AzureResources = managed.AzureResources
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
@@ -366,6 +522,43 @@ func (r *WorkloadIdentityReconciler) workloadIdentitiesForOIDCIssuer(ctx context
 	return requests
 }
 
+func (r *WorkloadIdentityReconciler) workloadIdentitiesForServiceAccount(ctx context.Context, object client.Object) []reconcile.Request {
+	if object.GetNamespace() == "" || object.GetName() == "" {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, 1)
+	seen := map[types.NamespacedName]struct{}{}
+	appendMatches := func(field, value string) bool {
+		if value == "" {
+			return true
+		}
+		identities := &azworkloadidentityv1alpha1.WorkloadIdentityList{}
+		if err := r.List(ctx, identities, client.InNamespace(object.GetNamespace()), client.MatchingFields{field: value}); err != nil {
+			logf.FromContext(ctx).Error(err, "Failed to list indexed WorkloadIdentities for ServiceAccount watch", "field", field, "value", value)
+			return false
+		}
+		for _, identity := range identities.Items {
+			key := types.NamespacedName{Name: identity.Name, Namespace: identity.Namespace}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			requests = append(requests, reconcile.Request{NamespacedName: key})
+		}
+		return true
+	}
+
+	if !appendMatches(workloadIdentityServiceAccountNameIndex, object.GetName()) {
+		return nil
+	}
+	ownerUID := object.GetLabels()[serviceAccountUID]
+	if !appendMatches(workloadIdentityUIDIndex, ownerUID) {
+		return nil
+	}
+	return requests
+}
+
 func serviceAccountKey(identity *azworkloadidentityv1alpha1.WorkloadIdentity) types.NamespacedName {
 	return types.NamespacedName{Name: identity.Spec.ServiceAccount.Name, Namespace: identity.Namespace}
 }
@@ -403,9 +596,22 @@ func mergeStringMap(existing, desired map[string]string) map[string]string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WorkloadIdentityReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &azworkloadidentityv1alpha1.WorkloadIdentity{}, workloadIdentityServiceAccountNameIndex, func(object client.Object) []string {
+		identity := object.(*azworkloadidentityv1alpha1.WorkloadIdentity)
+		return []string{identity.Spec.ServiceAccount.Name}
+	}); err != nil {
+		return fmt.Errorf("index WorkloadIdentities by ServiceAccount name: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &azworkloadidentityv1alpha1.WorkloadIdentity{}, workloadIdentityUIDIndex, func(object client.Object) []string {
+		return []string{string(object.GetUID())}
+	}); err != nil {
+		return fmt.Errorf("index WorkloadIdentities by UID: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&azworkloadidentityv1alpha1.WorkloadIdentity{}).
-		Watches(&azworkloadidentityv1alpha1.OIDCIssuer{}, handler.EnqueueRequestsFromMapFunc(r.workloadIdentitiesForOIDCIssuer)).
+		For(&azworkloadidentityv1alpha1.WorkloadIdentity{}, builder.WithPredicates(primaryResourcePredicate())).
+		Watches(&azworkloadidentityv1alpha1.OIDCIssuer{}, handler.EnqueueRequestsFromMapFunc(r.workloadIdentitiesForOIDCIssuer), builder.WithPredicates(oidcIssuerDependencyPredicate())).
+		Watches(&corev1.ServiceAccount{}, handler.EnqueueRequestsFromMapFunc(r.workloadIdentitiesForServiceAccount), builder.WithPredicates(serviceAccountDependencyPredicate())).
 		Named("workloadidentity").
 		Complete(r)
 }

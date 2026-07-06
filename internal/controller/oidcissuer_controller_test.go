@@ -119,7 +119,7 @@ var _ = Describe("OIDCIssuer Controller", func() {
 	Context("When reconciling a resource", func() {
 		ctx := context.Background()
 		typeNamespacedName := types.NamespacedName{Name: workloadidentityv1alpha1.OIDCIssuerName}
-		blockingIdentityKey := types.NamespacedName{Name: "blocking-workload", Namespace: "default"}
+		blockingIdentityKey := types.NamespacedName{Name: "blocking-workload", Namespace: testWorkloadNamespace}
 
 		BeforeEach(func() {
 			deleteWorkloadIdentity(ctx, blockingIdentityKey)

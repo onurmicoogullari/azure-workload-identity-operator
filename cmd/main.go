@@ -83,6 +83,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var oidcIssuerRefreshInterval time.Duration
+	var workloadIdentityRefreshInterval time.Duration
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -102,6 +103,13 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	registerOIDCIssuerRefreshIntervalFlags(flag.CommandLine, &oidcIssuerRefreshInterval)
+	flag.DurationVar(
+		&workloadIdentityRefreshInterval,
+		"workload-identity-refresh-interval",
+		controller.DefaultWorkloadIdentityRefreshInterval,
+		"Base interval for successful WorkloadIdentity reconciles to revalidate Azure resources and repair "+
+			"ServiceAccount drift; each resource receives up to 10% stable jitter.",
+	)
 	opts := zap.Options{
 		Development: true,
 	}
@@ -233,8 +241,9 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.WorkloadIdentityReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		RefreshInterval: workloadIdentityRefreshInterval,
 		Manager: &azure.WorkloadIdentityManager{
 			Credential: azureCredential,
 		},
