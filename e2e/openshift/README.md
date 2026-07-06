@@ -87,63 +87,57 @@ The test covers the full local integration path:
 
 1. The `OIDCIssuer` controller creates Azure issuer storage and publishes OIDC
    discovery/JWKS documents.
-2. The operator updates OpenShift to use the published OIDC issuer as the
+2. Signing key rotation publishes both the active OpenShift signing key and a
+   test-owned retiring signing key in `OIDCIssuer/default.status.signingKeys`
+   and JWKS.
+3. The OIDCIssuer periodic refresh notices a replacement of the test-owned
+   retiring signing key Secret without an `OIDCIssuer` spec change, then
+   republishes status and JWKS with the new retiring key.
+4. The operator updates OpenShift to use the published OIDC issuer as the
    service-account token issuer and records the previous configured issuer in
    `OIDCIssuer/default.status.previousServiceAccountIssuer`.
-3. OpenShift rolls the API server and starts minting service-account tokens with
+5. OpenShift rolls the API server and starts minting service-account tokens with
    the new issuer.
-4. The `WorkloadIdentity` controller creates a user-assigned managed identity,
+6. The `WorkloadIdentity` controller creates a user-assigned managed identity,
    creates a federated identity credential, and creates or adopts the Kubernetes
    ServiceAccount.
-5. The Azure Workload Identity mutating webhook injects the projected token and
+7. The Azure Workload Identity mutating webhook injects the projected token and
    Azure environment into the test Job.
-6. The test Job exchanges the OpenShift service-account token for Azure
+8. The test Job exchanges the OpenShift service-account token for Azure
    credentials and reads a real Key Vault secret.
-7. The OIDCIssuer validating webhook rejects deletion while the
+9. The OIDCIssuer validating webhook rejects deletion while the
    `WorkloadIdentity` still exists, before the resource enters deletion.
-8. After the `WorkloadIdentity` is deleted, the OIDCIssuer validating webhook
+10. After the `WorkloadIdentity` is deleted, the OIDCIssuer validating webhook
    rejects deletion while OpenShift still references the issuer URL.
-9. The script performs the manual OpenShift service-account issuer handoff, then
+11. The script performs the manual OpenShift service-account issuer handoff, then
    deletes the `OIDCIssuer` and verifies the operator removes the
    OIDCIssuer-created Azure resources.
 
-## What The Script Does
+## What The Script Tests, Step By Step
 
-At a high level, `e2e-test.sh`:
+Script output is grouped under these numbered steps.
 
-1. Checks required tools and resolves Azure subscription/tenant defaults from
-   the active Azure CLI account.
-2. Fails early if the default test resource groups already exist, so cleanup can
-   be verified safely.
-3. Installs the Azure Workload Identity mutating webhook with Helm.
-4. Applies an OpenShift compatibility patch to the webhook Deployment. The
-   upstream chart pins `runAsUser` and `runAsGroup` to `65532`; OpenShift
-   assigns namespace-scoped UID ranges via SCCs, so the script removes only
-   those fixed IDs.
-5. Installs this operator's CRDs with `make install`.
-6. Starts the operator locally with `go run`, using the current kubeconfig,
-   Azure CLI-backed `DefaultAzureCredential`, and a short-lived local webhook
-   serving certificate.
-7. Creates the test namespace if it does not already exist.
-8. Applies `oidc-issuer.yaml`.
-9. Grants the operator identity `Storage Blob Data Contributor` on the generated
-   storage account so it can upload the OIDC documents.
-10. Waits for `OIDCIssuer/default` to become `Ready`.
-11. Waits for OpenShift `Authentication/cluster.spec.serviceAccountIssuer` to
-    match the issuer URL, waits for the kube-apiserver operator to settle, and
-    verifies newly minted service-account tokens contain the expected `iss`
-    claim.
-12. Creates the Key Vault inside the script-owned Key Vault resource group.
-13. Applies `workload-identity.yaml` and waits for it to become `Ready`.
-14. Uploads the test secret to Key Vault and grants the workload identity
-    `Key Vault Secrets User`.
-15. Builds the small `keyvault-secret-reader` app with an OpenShift binary
-    build, using the internal OpenShift image registry.
-16. Runs `job.yaml` and waits for it to complete.
-17. Prints the Job logs. A successful run includes the retrieved Key Vault
-    secret value.
-18. Verifies the OIDCIssuer validating webhook rejects deletion while the
-    `WorkloadIdentity` still exists and leaves the OIDCIssuer active.
+1. Install Azure Workload Identity webhook.
+2. Patch webhook deployment for OpenShift UID/SCC compatibility.
+3. Install operator CRDs.
+4. Start the operator locally.
+5. Create the test namespace.
+6. Create `OIDCIssuer/default`.
+7. Grant blob upload access for OIDC document publishing.
+8. Wait for `OIDCIssuer/default` Ready and published issuer URL.
+9. Verify previous OpenShift service-account issuer was captured.
+10. Add a test retiring signing key and verify JWKS has active + retiring keys.
+11. Wait for OpenShift to use the new issuer and mint tokens with that `iss`.
+12. Replace the retiring key Secret only, then verify periodic refresh republishes it.
+13. Create Key Vault.
+14. Create `WorkloadIdentity`.
+15. Verify conflict handling for ServiceAccount and federated credential conflicts.
+16. Upload a real Key Vault secret and assign read access.
+17. Build and run the OpenShift Job.
+18. Verify the Job reads the Key Vault secret using workload identity.
+19. Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.
+20. During cleanup, verify deletion is also rejected while OpenShift still references the issuer.
+21. Restore OpenShift issuer, delete resources, and verify Azure cleanup.
 
 ## Cleanup
 

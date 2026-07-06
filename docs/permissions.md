@@ -74,9 +74,9 @@ roleRef:
   name: azure-workload-identity-operator-signing-key-reader
 ```
 
-## Signing Key Changes
+## OIDCIssuer Refresh
 
-The operator reads the configured active and retiring signing key Secrets during reconciliation. To avoid broad cluster-wide Secret watch permissions, Secret changes are picked up by periodic reconciliation rather than an immediate Secret watch. The default interval is 5 minutes and can be changed with `--signing-key-refresh-interval`.
+The operator reads the configured active and retiring signing key Secrets during reconciliation. To avoid broad cluster-wide Secret watch permissions, signing key changes are picked up by periodic OIDCIssuer reconciliation rather than an immediate Secret watch. The same refresh also reconciles Azure storage resources and republishes OIDC documents. The default interval is 5 minutes and can be changed with `--oidc-issuer-refresh-interval`.
 
 To rotate safely:
 

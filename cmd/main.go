@@ -68,6 +68,11 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+func registerOIDCIssuerRefreshIntervalFlags(flags *flag.FlagSet, interval *time.Duration) {
+	flags.DurationVar(interval, "oidc-issuer-refresh-interval", controller.DefaultOIDCIssuerRefreshInterval,
+		"How often to reconcile OIDCIssuer publishing, including signing keys, Azure storage resources, and OIDC documents.")
+}
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -77,7 +82,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
-	var signingKeyRefreshInterval time.Duration
+	var oidcIssuerRefreshInterval time.Duration
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -96,8 +101,7 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.DurationVar(&signingKeyRefreshInterval, "signing-key-refresh-interval", 5*time.Minute,
-		"How often to refresh OIDC documents from the signing key Secret without broad Secret watch permissions.")
+	registerOIDCIssuerRefreshIntervalFlags(flag.CommandLine, &oidcIssuerRefreshInterval)
 	opts := zap.Options{
 		Development: true,
 	}
@@ -223,7 +227,7 @@ func main() {
 		},
 		OpenShiftServiceAccountIssuer: openShiftServiceAccountIssuer,
 		ServiceAccountTokens:          serviceAccountTokens,
-		SigningKeyRefreshInterval:     signingKeyRefreshInterval,
+		OIDCIssuerRefreshInterval:     oidcIssuerRefreshInterval,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "oidcissuer")
 		os.Exit(1)
