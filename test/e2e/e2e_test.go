@@ -31,20 +31,20 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	testutil "github.com/onurmicoogullari/az-workload-identity-operator/test/utils"
+	testutil "github.com/onurmicoogullari/azure-workload-identity-operator/test/utils"
 )
 
 // namespace where the project is deployed in
-const namespace = "az-workload-identity-operator-system"
+const namespace = "azure-workload-identity-operator-system"
 
 // serviceAccountName created for the project
-const serviceAccountName = "az-workload-identity-operator-controller-manager"
+const serviceAccountName = "azure-workload-identity-operator-controller-manager"
 
 // metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "az-workload-identity-operator-metrics-service"
+const metricsServiceName = "azure-workload-identity-operator-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "az-workload-identity-operator-metrics-binding"
+const metricsRoleBindingName = "azure-workload-identity-operator-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -177,7 +177,7 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=az-workload-identity-operator-metrics-reader",
+				"--clusterrole=azure-workload-identity-operator-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
 			_, err := testutil.RunInProject(cmd)
@@ -375,7 +375,7 @@ func waitForValidatingWebhook() {
 	By("waiting for the webhook service endpoints to be ready")
 	Eventually(func(g Gomega) {
 		cmd := exec.Command("kubectl", "get", "endpointslices.discovery.k8s.io", "-n", namespace,
-			"-l", "kubernetes.io/service-name=az-workload-identity-operator-webhook-service",
+			"-l", "kubernetes.io/service-name=azure-workload-identity-operator-webhook-service",
 			"-o", "jsonpath={range .items[*]}{range .endpoints[*]}{.addresses[*]}{end}{end}")
 		output, err := testutil.RunInProject(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "Webhook endpoints should exist")
@@ -385,7 +385,7 @@ func waitForValidatingWebhook() {
 	By("waiting for the validating webhook CA bundle")
 	Eventually(func(g Gomega) {
 		cmd := exec.Command("kubectl", "get", "validatingwebhookconfigurations.admissionregistration.k8s.io",
-			"az-workload-identity-operator-validating-webhook-configuration",
+			"azure-workload-identity-operator-validating-webhook-configuration",
 			"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
 		output, err := testutil.RunInProject(cmd)
 		g.Expect(err).NotTo(HaveOccurred(), "ValidatingWebhookConfiguration should exist")

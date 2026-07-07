@@ -8,8 +8,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
-	"github.com/onurmicoogullari/az-workload-identity-operator/internal/workloadidentity"
+	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 )
 
 const testNamespace = "default"

@@ -28,12 +28,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	testutil "github.com/onurmicoogullari/az-workload-identity-operator/test/utils"
+	testutil "github.com/onurmicoogullari/azure-workload-identity-operator/test/utils"
 )
 
 var (
 	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/az-workload-identity-operator:v0.0.1"
+	managerImage = "example.com/azure-workload-identity-operator:v0.0.1"
 	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
 	shouldCleanupCertManager = false
 )
@@ -46,7 +46,7 @@ var (
 // To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting az-workload-identity-operator e2e test suite\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Starting azure-workload-identity-operator e2e test suite\n")
 	RunSpecs(t, "e2e suite")
 }
 

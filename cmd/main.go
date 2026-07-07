@@ -39,12 +39,12 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	workloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
-	"github.com/onurmicoogullari/az-workload-identity-operator/internal/azure"
-	"github.com/onurmicoogullari/az-workload-identity-operator/internal/controller"
-	kubernetesclient "github.com/onurmicoogullari/az-workload-identity-operator/internal/kubernetes"
-	"github.com/onurmicoogullari/az-workload-identity-operator/internal/openshift"
-	webhookv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/internal/webhook/v1alpha1"
+	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/azure"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/controller"
+	kubernetesclient "github.com/onurmicoogullari/azure-workload-identity-operator/internal/kubernetes"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/openshift"
+	webhookv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 

@@ -32,8 +32,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	workloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
-	"github.com/onurmicoogullari/az-workload-identity-operator/internal/oidc"
+	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/oidc"
 )
 
 const (

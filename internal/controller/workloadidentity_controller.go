@@ -36,8 +36,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
-	"github.com/onurmicoogullari/az-workload-identity-operator/internal/workloadidentity"
+	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 )
 
 const workloadIdentityFinalizer = "workloadidentity.azure.micosolutions.se/workloadidentity-finalizer"
@@ -49,7 +49,7 @@ const (
 	serviceAccountManagedBy      = "workloadidentity.azure.micosolutions.se/managed-by"
 	serviceAccountUID            = "workloadidentity.azure.micosolutions.se/workload-identity-uid"
 	serviceAccountCreatedBy      = "workloadidentity.azure.micosolutions.se/created-by-operator"
-	serviceAccountManagerName    = "az-workload-identity-operator"
+	serviceAccountManagerName    = "azure-workload-identity-operator"
 	serviceAccountSubjectPattern = "system:serviceaccount:%s:%s"
 	trueValue                    = "true"
 )

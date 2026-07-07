@@ -1,4 +1,4 @@
-module github.com/onurmicoogullari/az-workload-identity-operator
+module github.com/onurmicoogullari/azure-workload-identity-operator
 
 go 1.26.0
 

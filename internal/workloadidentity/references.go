@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
+	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
 )
 
 // ResourceReferences returns stable namespace/name references for WorkloadIdentity resources.

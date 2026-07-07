@@ -15,7 +15,7 @@ const (
 	operatorAPIGroupTag     = "operator-api-group"
 	operatorAPIGroupValue   = "workloadidentity.azure.micosolutions.se"
 	operatorCreatedTagValue = "true"
-	operatorName            = "az-workload-identity-operator"
+	operatorName            = "azure-workload-identity-operator"
 )
 
 func operatorOwnershipTags(uidTagKey, uid string, createdByOperator bool) map[string]*string {

@@ -3,7 +3,7 @@ package oidc
 import (
 	"context"
 
-	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
+	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
 )
 
 type Publisher interface {

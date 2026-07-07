@@ -12,9 +12,9 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
-	"github.com/onurmicoogullari/az-workload-identity-operator/internal/oidc"
-	"github.com/onurmicoogullari/az-workload-identity-operator/internal/signingkey"
+	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/oidc"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/signingkey"
 )
 
 const oidcIssuerUIDTag = "oidc-issuer-uid"
