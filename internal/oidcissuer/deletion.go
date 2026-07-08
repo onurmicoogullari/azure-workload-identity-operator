@@ -3,7 +3,7 @@ package oidcissuer
 import (
 	"fmt"
 
-	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/az-workload-identity-operator/api/v1alpha1"
+	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
 )
 
 func HasPublishedIssuerURL(issuer *azworkloadidentityv1alpha1.OIDCIssuer) bool {

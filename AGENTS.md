@@ -1,4 +1,4 @@
-# az-workload-identity-operator - AI Agent Guide
+# azure-workload-identity-operator - AI Agent Guide
 
 ## Project Structure
 

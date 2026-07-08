@@ -331,26 +331,22 @@ created_role_assignment_ids=()
 
 cleanup_job() {
   if [[ $applied_job == "true" ]]; then
-    kubectl delete job "$JOB_NAME" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
-    kubectl wait --for=delete "job/$JOB_NAME" -n "$NAMESPACE" --timeout="$wait_timeout" >/dev/null || return 1
+    cleanup_kubernetes_resource "job/$JOB_NAME" "$NAMESPACE" || return $?
   fi
 }
 
 cleanup_conflict_workload_identity() {
   if [[ $applied_conflict_workload_identity == "true" ]]; then
-    kubectl delete workloadidentity azwi-sa-conflict -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
-    kubectl wait --for=delete workloadidentity/azwi-sa-conflict -n "$NAMESPACE" --timeout="$wait_timeout" >/dev/null || return 1
+    cleanup_kubernetes_resource workloadidentity/azwi-sa-conflict "$NAMESPACE" || return $?
   fi
   if [[ $applied_federated_credential_conflict_workload_identity == "true" ]]; then
-    kubectl delete workloadidentity azwi-fic-conflict -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
-    kubectl wait --for=delete workloadidentity/azwi-fic-conflict -n "$NAMESPACE" --timeout="$wait_timeout" >/dev/null || return 1
+    cleanup_kubernetes_resource workloadidentity/azwi-fic-conflict "$NAMESPACE" || return $?
   fi
 }
 
 cleanup_conflict_service_account() {
   if [[ $created_conflict_service_account == "true" ]]; then
-    kubectl delete serviceaccount azwi-sa-conflict -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
-    kubectl wait --for=delete serviceaccount/azwi-sa-conflict -n "$NAMESPACE" --timeout="$wait_timeout" >/dev/null || return 1
+    cleanup_kubernetes_resource serviceaccount/azwi-sa-conflict "$NAMESPACE" || return $?
   fi
 }
 
@@ -360,8 +356,7 @@ cleanup_workload_identity() {
     if [[ $verify_workload_identity_resource_group_deleted == "true" && $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" && $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME != "$AZURE_RESOURCE_GROUP_NAME" ]]; then
       log WATCH "Deleting WorkloadIdentity/$WORKLOAD_IDENTITY_NAME and waiting for its finalizer to delete Azure resource group $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME"
     fi
-    kubectl delete workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
-    if kubectl wait --for=delete "workloadidentity/$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" --timeout="$wait_timeout" >/dev/null 2>&1; then
+    if cleanup_kubernetes_resource "workloadidentity/$WORKLOAD_IDENTITY_NAME" "$NAMESPACE"; then
       workload_identity_deleted=true
     else
       return 1
@@ -390,8 +385,7 @@ cleanup_oidc_issuer() {
     if [[ $verify_oidc_resource_group_deleted == "true" && $OIDC_ISSUER_DELETION_POLICY == "Delete" ]]; then
       log WATCH "Deleting OIDCIssuer/default and waiting for its finalizer to delete Azure resource group $AZURE_RESOURCE_GROUP_NAME"
     fi
-    kubectl delete oidcissuer default --ignore-not-found --wait=false >/dev/null 2>&1
-    if kubectl wait --for=delete oidcissuer/default --timeout="$wait_timeout" >/dev/null 2>&1; then
+    if cleanup_kubernetes_resource oidcissuer/default ""; then
       oidc_deleted=true
     else
       return 1
@@ -407,10 +401,16 @@ verify_oidc_resource_group_cleanup() {
 
 cleanup_build_artifacts() {
   if [[ $created_buildconfig == "true" ]]; then
-    oc delete buildconfig "$IMAGE_NAME" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
-    oc delete imagestream "$IMAGE_NAME" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
-    wait_for_kubernetes_resource_absent "buildconfig/$IMAGE_NAME" "$NAMESPACE" || return 1
-    wait_for_kubernetes_resource_absent "imagestream/$IMAGE_NAME" "$NAMESPACE" || return 1
+    if ! kubernetes_cleanup_command "$wait_timeout" oc delete buildconfig "$IMAGE_NAME" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null; then
+      kubernetes_cleanup_failure "delete OpenShift BuildConfig/$IMAGE_NAME"
+      return $?
+    fi
+    if ! kubernetes_cleanup_command "$wait_timeout" oc delete imagestream "$IMAGE_NAME" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null; then
+      kubernetes_cleanup_failure "delete OpenShift ImageStream/$IMAGE_NAME"
+      return $?
+    fi
+    wait_for_kubernetes_resource_absent "buildconfig/$IMAGE_NAME" "$NAMESPACE" || return $?
+    wait_for_kubernetes_resource_absent "imagestream/$IMAGE_NAME" "$NAMESPACE" || return $?
   fi
 }
 
@@ -441,39 +441,30 @@ stop_local_operator() {
 
 cleanup_workload_identity_webhook_release() {
   if [[ $created_workload_identity_webhook_release == "true" ]]; then
-    if helm status "$azure_workload_identity_webhook_release" -n "$azure_workload_identity_webhook_namespace" >/dev/null 2>&1; then
-      log DELETE "Uninstalling Azure Workload Identity webhook Helm release $azure_workload_identity_webhook_release"
-      helm uninstall "$azure_workload_identity_webhook_release" \
-        -n "$azure_workload_identity_webhook_namespace" \
-        --wait \
-        --timeout "$wait_timeout" >/dev/null || return 1
-      if helm status "$azure_workload_identity_webhook_release" -n "$azure_workload_identity_webhook_namespace" >/dev/null 2>&1; then
-        log ERROR "Helm release $azure_workload_identity_webhook_release still exists"
-        return 1
-      fi
-    fi
+    cleanup_helm_release "$azure_workload_identity_webhook_release" "$azure_workload_identity_webhook_namespace" || return $?
   fi
 }
 
 cleanup_test_namespace() {
   if [[ $created_test_namespace == "true" ]]; then
     log DELETE "Deleting test namespace $NAMESPACE created by e2e test"
-    kubectl delete namespace "$NAMESPACE" --ignore-not-found --wait=false >/dev/null || return 1
-    kubectl wait --for=delete "namespace/$NAMESPACE" --timeout="$wait_timeout" >/dev/null || return 1
+    cleanup_namespace "$NAMESPACE" || return $?
   fi
 }
 
 cleanup_retiring_signing_key_secret() {
   if [[ $created_retiring_signing_key_secret == "true" ]]; then
-    kubectl delete secret "$RETIRING_SIGNING_KEY_SECRET_NAME" -n "$RETIRING_SIGNING_KEY_SECRET_NAMESPACE" --ignore-not-found >/dev/null || return 1
+    if ! kubernetes_cleanup_command "$wait_timeout" kubectl delete secret "$RETIRING_SIGNING_KEY_SECRET_NAME" -n "$RETIRING_SIGNING_KEY_SECRET_NAMESPACE" --ignore-not-found >/dev/null; then
+      kubernetes_cleanup_failure "delete retiring signing key Secret"
+      return $?
+    fi
   fi
 }
 
 cleanup_workload_identity_webhook_namespace() {
   if [[ $created_workload_identity_webhook_namespace == "true" ]]; then
     log DELETE "Deleting Azure Workload Identity webhook namespace $azure_workload_identity_webhook_namespace created by e2e test"
-    kubectl delete namespace "$azure_workload_identity_webhook_namespace" --ignore-not-found --wait=false >/dev/null || return 1
-    kubectl wait --for=delete "namespace/$azure_workload_identity_webhook_namespace" --timeout="$wait_timeout" >/dev/null || return 1
+    cleanup_namespace "$azure_workload_identity_webhook_namespace" || return $?
   fi
 }
 
@@ -511,19 +502,410 @@ cleanup_role_assignments() {
 
 wait_for_kubernetes_resource_absent() {
   local resource=$1
-  local namespace=$2
+  local namespace=${2:-}
   local deadline
+  local exists_status
+  local -a get_command
   deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+  get_command=(kubectl get "$resource")
+  if [[ -n $namespace ]]; then
+    get_command+=(-n "$namespace")
+  fi
 
   while (( SECONDS < deadline )); do
-    if ! kubectl get "$resource" -n "$namespace" >/dev/null 2>&1; then
-      return 0
+    if kubernetes_resource_exists_for_cleanup "${get_command[@]}" >/dev/null; then
+      exists_status=0
+    else
+      exists_status=$?
     fi
-    sleep 2
+    case "$exists_status" in
+      0) ;;
+      1) return 0 ;;
+      2)
+        kubernetes_cleanup_failure "check Kubernetes resource absence: $namespace/$resource"
+        return $?
+        ;;
+      3)
+        log RETRY "Kubernetes API/authentication is temporarily unavailable during OpenShift rollout; retrying cleanup discovery"
+        ;;
+    esac
+    sleep_until_deadline "$deadline" 2 || true
   done
 
   log ERROR "Kubernetes resource still exists: $namespace/$resource"
+  kubernetes_cleanup_failure "wait for Kubernetes resource to be absent: $namespace/$resource"
+  return $?
+}
+
+cleanup_kubernetes_resource() {
+  local resource=$1
+  local namespace=${2:-}
+  local -a delete_command
+  delete_command=(kubectl delete "$resource" --ignore-not-found --wait=false)
+  if [[ -n $namespace ]]; then
+    delete_command+=(-n "$namespace")
+  fi
+
+  if ! kubernetes_cleanup_command "$wait_timeout" "${delete_command[@]}" >/dev/null; then
+    kubernetes_cleanup_failure "delete Kubernetes resource ${namespace:+$namespace/}$resource"
+    return $?
+  fi
+
+  wait_for_kubernetes_resource_absent "$resource" "$namespace" || return $?
+}
+
+kubernetes_cleanup_command() {
+  local timeout=$1
+  shift
+  local deadline
+  local output
+  local status
+  deadline=$((SECONDS + $(duration_seconds "$timeout")))
+
+  while true; do
+    if output=$("$@" 2>&1); then
+      [[ -n $output ]] && printf '%s\n' "$output"
+      return 0
+    else
+      status=$?
+    fi
+
+    if ! is_transient_kubernetes_error "$output"; then
+      [[ -n $output ]] && printf '%s\n' "$output" >&2
+      return "$status"
+    fi
+
+    if (( SECONDS >= deadline )); then
+      [[ -n $output ]] && log ERROR "$output"
+      return "$status"
+    fi
+
+    log RETRY "Kubernetes API/authentication is temporarily unavailable during OpenShift rollout; retrying cleanup command"
+    sleep_until_deadline "$deadline" 10 || true
+  done
+}
+
+cleanup_helm_release() {
+  local release=$1
+  local namespace=$2
+  local deadline
+  local exists_status
+  local remaining
+  local attempt_timeout
+  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+
+  while (( SECONDS < deadline )); do
+    if helm_release_exists_for_cleanup "$release" "$namespace"; then
+      exists_status=0
+    else
+      exists_status=$?
+    fi
+    case "$exists_status" in
+      0) break ;;
+      1) return 0 ;;
+      2)
+        kubernetes_cleanup_failure "check Helm release $namespace/$release"
+        return $?
+        ;;
+      3)
+        log RETRY "Kubernetes API/authentication is temporarily unavailable during OpenShift rollout; retrying Helm release check"
+        sleep_until_deadline "$deadline" 10 || true
+        ;;
+    esac
+  done
+
+  if (( SECONDS >= deadline )); then
+    kubernetes_cleanup_failure "check Helm release $namespace/$release"
+    return $?
+  fi
+
+  log DELETE "Uninstalling Azure Workload Identity webhook Helm release $release"
+  while (( SECONDS < deadline )); do
+    remaining=$((deadline - SECONDS))
+    attempt_timeout=$remaining
+    if (( attempt_timeout > 60 )); then
+      attempt_timeout=60
+    fi
+
+    if helm_uninstall_for_cleanup "$release" "$namespace" "${attempt_timeout}s"; then
+      exists_status=0
+    else
+      exists_status=$?
+    fi
+    case "$exists_status" in
+      0) break ;;
+      2)
+        kubernetes_cleanup_failure "uninstall Helm release $namespace/$release"
+        return $?
+        ;;
+      3)
+        log RETRY "Kubernetes API/authentication is temporarily unavailable during OpenShift rollout; retrying Helm uninstall"
+        ;;
+    esac
+    sleep_until_deadline "$deadline" 10 || true
+  done
+
+  if (( SECONDS >= deadline )); then
+    kubernetes_cleanup_failure "uninstall Helm release $namespace/$release"
+    return $?
+  fi
+
+  while (( SECONDS < deadline )); do
+    if helm_release_exists_for_cleanup "$release" "$namespace"; then
+      exists_status=0
+    else
+      exists_status=$?
+    fi
+    case "$exists_status" in
+      0)
+        log RETRY "Helm release $namespace/$release still exists after uninstall; waiting"
+        ;;
+      1) return 0 ;;
+      2)
+        kubernetes_cleanup_failure "verify Helm release $namespace/$release removal"
+        return $?
+        ;;
+      3)
+        log RETRY "Kubernetes API/authentication is temporarily unavailable during OpenShift rollout; retrying Helm release removal check"
+        ;;
+    esac
+    sleep_until_deadline "$deadline" 10 || true
+  done
+
+  kubernetes_cleanup_failure "verify Helm release $namespace/$release removal"
+  return $?
+}
+
+record_workload_identity_webhook_release_cleanup_ownership() {
+  local deadline
+  local exists_status
+  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+
+  while (( SECONDS < deadline )); do
+    if helm_release_exists_for_cleanup "$azure_workload_identity_webhook_release" "$azure_workload_identity_webhook_namespace"; then
+      exists_status=0
+    else
+      exists_status=$?
+    fi
+    case "$exists_status" in
+      0) return 0 ;;
+      1)
+        created_workload_identity_webhook_release=true
+        return 0
+        ;;
+      2)
+        kubernetes_cleanup_failure "check Helm release $azure_workload_identity_webhook_namespace/$azure_workload_identity_webhook_release before install"
+        return $?
+        ;;
+      3)
+        log RETRY "Kubernetes API/authentication is temporarily unavailable during OpenShift rollout; retrying Helm release ownership check"
+        sleep_until_deadline "$deadline" 10 || true
+        ;;
+    esac
+  done
+
+  kubernetes_cleanup_failure "check Helm release $azure_workload_identity_webhook_namespace/$azure_workload_identity_webhook_release before install"
+  return $?
+}
+
+helm_release_exists_for_cleanup() {
+  local release=$1
+  local namespace=$2
+  local output
+  local status
+
+  if output=$(helm status "$release" -n "$namespace" 2>&1); then
+    return 0
+  else
+    status=$?
+  fi
+
+  if is_helm_release_not_found_error "$output"; then
+    return 1
+  fi
+
+  if is_transient_kubernetes_error "$output"; then
+    return 3
+  fi
+
+  [[ -n $output ]] && printf '%s\n' "$output" >&2
+  return 2
+}
+
+helm_uninstall_for_cleanup() {
+  local release=$1
+  local namespace=$2
+  local timeout=$3
+  local output
+  local status
+
+  if output=$(helm uninstall "$release" -n "$namespace" --wait --timeout "$timeout" 2>&1); then
+    [[ -n $output ]] && printf '%s\n' "$output"
+    return 0
+  else
+    status=$?
+  fi
+
+  if is_helm_release_not_found_error "$output"; then
+    return 0
+  fi
+
+  if is_transient_kubernetes_error "$output"; then
+    return 3
+  fi
+
+  if is_helm_wait_timeout_error "$output"; then
+    return 3
+  fi
+
+  [[ -n $output ]] && printf '%s\n' "$output" >&2
+  return 2
+}
+
+helm_release_status_for_cleanup() {
+  local release=$1
+  local namespace=$2
+  local output
+  local status
+  local release_status
+
+  if output=$(helm status "$release" -n "$namespace" -o json 2>&1); then
+    release_status=$(printf '%s\n' "$output" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')
+    printf '%s\n' "$release_status"
+    return 0
+  else
+    status=$?
+  fi
+
+  if is_helm_release_not_found_error "$output"; then
+    return 1
+  fi
+
+  if is_transient_kubernetes_error "$output"; then
+    return 3
+  fi
+
+  [[ -n $output ]] && printf '%s\n' "$output" >&2
+  return 2
+}
+
+is_helm_release_not_found_error() {
+  local output=$1
+  [[ $output == *"release: not found"* ||
+    $output == *"Release not loaded"* ]]
+}
+
+is_helm_wait_timeout_error() {
+  local output=$1
+  [[ $output == *"timed out waiting for the condition"* ||
+    $output == *"timed out waiting for resources"* ]]
+}
+
+kubernetes_resource_exists_for_cleanup() {
+  local output
+  local status
+
+  if output=$("$@" 2>&1); then
+    [[ -n $output ]] && printf '%s\n' "$output"
+    return 0
+  else
+    status=$?
+  fi
+
+  if is_kubernetes_not_found_error "$output"; then
+    return 1
+  fi
+
+  if is_transient_kubernetes_error "$output"; then
+    return 3
+  fi
+
+  [[ -n $output ]] && printf '%s\n' "$output" >&2
+  return 2
+}
+
+is_transient_kubernetes_error() {
+  local output=$1
+  [[ $output == *"connection reset by peer"* ||
+    $output == *"connection refused"* ||
+    $output == *"Client.Timeout exceeded"* ||
+    $output == *"context deadline exceeded"* ||
+    $output == *"net/http: TLS handshake timeout"* ||
+    $output == *"i/o timeout"* ||
+    $output == *"EOF"* ||
+    $output == *"Unauthorized"* ||
+    $output == *"unexpected response: 400"* ||
+    $output == *"the server has asked for the client to provide credentials"* ]]
+}
+
+is_kubernetes_not_found_error() {
+  local output=$1
+  [[ $output == *"(NotFound)"* ]]
+}
+
+kubernetes_cleanup_failure() {
+  local action=$1
+  log ERROR "Kubernetes cleanup failed after retrying expected CRC/OpenShift API and authentication resets: $action"
   return 1
+}
+
+sleep_until_deadline() {
+  local deadline=$1
+  local requested_sleep=$2
+  local remaining
+  remaining=$((deadline - SECONDS))
+
+  if (( remaining <= 0 )); then
+    return 1
+  fi
+  if (( requested_sleep > remaining )); then
+    requested_sleep=$remaining
+  fi
+  sleep "$requested_sleep"
+}
+
+cleanup_namespace() {
+  local namespace=$1
+  local deadline
+  local exists_status
+  local phase
+  local conditions
+  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+
+  if ! kubernetes_cleanup_command "$wait_timeout" kubectl delete namespace "$namespace" --ignore-not-found --wait=false >/dev/null; then
+    kubernetes_cleanup_failure "delete namespace $namespace"
+    return $?
+  fi
+
+  while (( SECONDS < deadline )); do
+    if kubernetes_resource_exists_for_cleanup kubectl get namespace "$namespace" >/dev/null; then
+      exists_status=0
+    else
+      exists_status=$?
+    fi
+    case "$exists_status" in
+      0) ;;
+      1) return 0 ;;
+      2)
+        kubernetes_cleanup_failure "check namespace $namespace deletion"
+        return $?
+        ;;
+      3)
+        log RETRY "Kubernetes API/authentication is temporarily unavailable during OpenShift rollout; retrying namespace deletion check"
+        ;;
+    esac
+    phase=$(kubectl get namespace "$namespace" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ $phase == "Terminating" ]]; then
+      conditions=$(kubectl get namespace "$namespace" -o jsonpath='{range .status.conditions[*]}{.type}={.status}:{.reason}{";"}{end}' 2>/dev/null || true)
+      if [[ $conditions == *"NamespaceDeletionDiscoveryFailure=True"* ]]; then
+        log RETRY "Namespace $namespace is waiting for API discovery during OpenShift API/authentication rollout"
+      fi
+    fi
+    sleep_until_deadline "$deadline" 10 || true
+  done
+
+  kubernetes_cleanup_failure "wait for namespace $namespace deletion"
+  return $?
 }
 
 wait_for_role_assignment_deleted() {
@@ -576,7 +958,7 @@ purge_deleted_key_vault() {
     if ! az keyvault show-deleted --name "$KEY_VAULT_NAME" --query id -o tsv >/dev/null 2>&1; then
       return 0
     fi
-    sleep 10
+    sleep_until_deadline "$deadline" 10 || true
   done
 
   if ! az keyvault show-deleted --name "$KEY_VAULT_NAME" --query id -o tsv >/dev/null 2>&1; then
@@ -856,9 +1238,7 @@ install_workload_identity_webhook() {
   fi
 
   cleanup_incomplete_webhook_release
-  if ! helm status "$azure_workload_identity_webhook_release" -n "$azure_workload_identity_webhook_namespace" >/dev/null 2>&1; then
-    created_workload_identity_webhook_release=true
-  fi
+  record_workload_identity_webhook_release_cleanup_ownership || exit 1
 
   helm_args=(
     upgrade --install "$azure_workload_identity_webhook_release" "$azure_workload_identity_helm_chart"
@@ -929,23 +1309,41 @@ dump_workload_identity_webhook_diagnostics() {
 }
 
 cleanup_incomplete_webhook_release() {
+  local deadline
+  local status_result
   local release_status
 
   if [[ $cleanup_incomplete_webhook_helm_release != "true" ]]; then
     return
   fi
 
-  release_status=$(helm status "$azure_workload_identity_webhook_release" \
-    -n "$azure_workload_identity_webhook_namespace" \
-    -o json 2>/dev/null | sed -n 's/.*"status":"\([^"]*\)".*/\1/p' || true)
+  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+  while (( SECONDS < deadline )); do
+    if release_status=$(helm_release_status_for_cleanup "$azure_workload_identity_webhook_release" "$azure_workload_identity_webhook_namespace"); then
+      status_result=0
+    else
+      status_result=$?
+    fi
+    case "$status_result" in
+      0) break ;;
+      1) return ;;
+      2) return 1 ;;
+      3)
+        log RETRY "Kubernetes API/authentication is temporarily unavailable during OpenShift rollout; retrying Helm release status check"
+        sleep_until_deadline "$deadline" 10 || true
+        ;;
+    esac
+  done
+
+  if (( SECONDS >= deadline )); then
+    kubernetes_cleanup_failure "check Helm release $azure_workload_identity_webhook_namespace/$azure_workload_identity_webhook_release before install"
+    return $?
+  fi
 
   case "$release_status" in
     failed|pending-install|pending-upgrade|pending-rollback)
       log DELETE "Removing incomplete Azure Workload Identity webhook Helm release with status $release_status"
-      helm uninstall "$azure_workload_identity_webhook_release" \
-        -n "$azure_workload_identity_webhook_namespace" \
-        --wait \
-        --timeout "$wait_timeout" >/dev/null || true
+      cleanup_helm_release "$azure_workload_identity_webhook_release" "$azure_workload_identity_webhook_namespace" || return $?
       ;;
   esac
 }
@@ -955,7 +1353,7 @@ install_operator_custom_resource_definitions() {
     return
   fi
 
-  log INSTALL "Installing az-workload-identity-operator CRDs"
+  log INSTALL "Installing azure-workload-identity-operator CRDs"
   make --no-print-directory -C "$repo_root" install
   kubectl wait --for=condition=Established crd/oidcissuers.workloadidentity.azure.micosolutions.se --timeout="$wait_timeout"
   kubectl wait --for=condition=Established crd/workloadidentities.workloadidentity.azure.micosolutions.se --timeout="$wait_timeout"
@@ -1028,7 +1426,7 @@ start_local_operator() {
 
   generate_local_operator_webhook_certificates
   operator_log_file=${operator_log_file:-$tmpdir/operator.log}
-  log RUN "Starting az-workload-identity-operator locally on health probe $operator_health_probe_bind_address; logs: $operator_log_file"
+  log RUN "Starting azure-workload-identity-operator locally on health probe $operator_health_probe_bind_address; logs: $operator_log_file"
   (
     cd "$repo_root"
     go run ./cmd/main.go \
@@ -1137,7 +1535,7 @@ wait_for_service_account_token_issuer() {
   log WATCH "Waiting for newly issued service account tokens to use issuer $issuer_url"
   while ((SECONDS < deadline)); do
     if ! kubectl get serviceaccount default -n "$NAMESPACE" >/dev/null 2>&1; then
-      sleep 10
+      sleep_until_deadline "$deadline" 10 || true
       continue
     fi
 
@@ -1192,9 +1590,9 @@ wait_for_openshift_kube_apiserver_operator() {
   local timeout=$1
 
   log WATCH "Waiting for OpenShift kube-apiserver operator rollout"
-  oc wait clusteroperator/kube-apiserver --for=condition=Available=True --timeout="$timeout" || return 1
-  oc wait clusteroperator/kube-apiserver --for=condition=Progressing=False --timeout="$timeout" || return 1
-  oc wait clusteroperator/kube-apiserver --for=condition=Degraded=False --timeout="$timeout" || return 1
+  wait_for_openshift_condition clusteroperator/kube-apiserver Available=True "$timeout" || return 1
+  wait_for_openshift_condition clusteroperator/kube-apiserver Progressing=False "$timeout" || return 1
+  wait_for_openshift_condition clusteroperator/kube-apiserver Degraded=False "$timeout" || return 1
 }
 
 wait_for_openshift_auth_operators() {
@@ -1203,9 +1601,55 @@ wait_for_openshift_auth_operators() {
 
   for operator in authentication openshift-apiserver; do
     log WATCH "Waiting for OpenShift $operator operator health"
-    oc wait "clusteroperator/$operator" --for=condition=Available=True --timeout="$timeout" || return 1
-    oc wait "clusteroperator/$operator" --for=condition=Progressing=False --timeout="$timeout" || return 1
-    oc wait "clusteroperator/$operator" --for=condition=Degraded=False --timeout="$timeout" || return 1
+    wait_for_openshift_condition "clusteroperator/$operator" Available=True "$timeout" || return 1
+    wait_for_openshift_condition "clusteroperator/$operator" Progressing=False "$timeout" || return 1
+    wait_for_openshift_condition "clusteroperator/$operator" Degraded=False "$timeout" || return 1
+  done
+}
+
+wait_for_openshift_condition() {
+  local resource=$1
+  local condition=$2
+  local timeout=$3
+  local deadline
+  local remaining
+  local attempt_timeout
+  local output
+  local status
+  deadline=$((SECONDS + $(duration_seconds "$timeout")))
+
+  while true; do
+    remaining=$((deadline - SECONDS))
+    if (( remaining <= 0 )); then
+      log ERROR "Timed out waiting for $resource condition $condition"
+      return 1
+    fi
+
+    attempt_timeout=$remaining
+    if (( attempt_timeout > 30 )); then
+      attempt_timeout=30
+    fi
+
+    if output=$(oc wait "$resource" --for="condition=$condition" --timeout="${attempt_timeout}s" 2>&1); then
+      [[ -n $output ]] && printf '%s\n' "$output"
+      return 0
+    else
+      status=$?
+    fi
+
+    if (( SECONDS >= deadline )); then
+      [[ -n $output ]] && log ERROR "$output"
+      return "$status"
+    fi
+
+    if is_transient_kubernetes_error "$output" || [[ $output == *"timed out waiting for the condition"* ]]; then
+      log RETRY "OpenShift API/operator condition $resource $condition is not stable yet; retrying"
+      sleep_until_deadline "$deadline" 10 || true
+      continue
+    fi
+
+    [[ -n $output ]] && printf '%s\n' "$output" >&2
+    return "$status"
   done
 }
 
@@ -1659,7 +2103,7 @@ verify_workload_identity_conflict_reconciliation() {
   created_conflict_service_account=true
   kubectl label serviceaccount "$conflict_service_account" -n "$NAMESPACE" \
     azure.workload.identity/use=true \
-    workloadidentity.azure.micosolutions.se/managed-by=az-workload-identity-operator \
+    workloadidentity.azure.micosolutions.se/managed-by=azure-workload-identity-operator \
     workloadidentity.azure.micosolutions.se/workload-identity-uid=foreign-workload-identity-uid \
     workloadidentity.azure.micosolutions.se/created-by-operator=false >/dev/null
 
@@ -1820,8 +2264,7 @@ oc start-build "$IMAGE_NAME" --from-dir="$reader_dir" --follow -n "$NAMESPACE"
 
 if kubectl get job "$JOB_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
   log DELETE "Deleting previous Job/$JOB_NAME"
-  kubectl delete job "$JOB_NAME" -n "$NAMESPACE" --ignore-not-found --wait=false
-  kubectl wait --for=delete "job/$JOB_NAME" -n "$NAMESPACE" --timeout="$wait_timeout"
+  cleanup_kubernetes_resource "job/$JOB_NAME" "$NAMESPACE"
 fi
 log APPLY "Applying Job/$JOB_NAME"
 render "$script_dir/job.yaml" | kubectl apply -f -

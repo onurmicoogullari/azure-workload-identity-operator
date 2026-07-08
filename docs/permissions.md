@@ -49,7 +49,7 @@ Example:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: az-workload-identity-operator-signing-key-reader
+  name: azure-workload-identity-operator-signing-key-reader
   namespace: openshift-kube-apiserver
 rules:
   - apiGroups: [""]
@@ -62,16 +62,16 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: az-workload-identity-operator-signing-key-reader
+  name: azure-workload-identity-operator-signing-key-reader
   namespace: openshift-kube-apiserver
 subjects:
   - kind: ServiceAccount
-    name: az-workload-identity-operator-controller-manager
-    namespace: az-workload-identity-operator-system
+    name: azure-workload-identity-operator-controller-manager
+    namespace: azure-workload-identity-operator-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: az-workload-identity-operator-signing-key-reader
+  name: azure-workload-identity-operator-signing-key-reader
 ```
 
 ## Signing Key Changes
@@ -103,7 +103,7 @@ Blob containers are not deleted separately. They are removed when their operator
 
 The operator tracks created/adopted Azure resources using tags:
 
-- `managed-by=az-workload-identity-operator`
+- `managed-by=azure-workload-identity-operator`
 - `oidc-issuer-uid=<kubernetes-uid>`
 - `created-by-operator=true|false`
 - `operator-api-group=workloadidentity.azure.micosolutions.se`
@@ -125,7 +125,7 @@ Federated identity credentials do not support tags. The operator therefore treat
 
 The operator tracks created/adopted `WorkloadIdentity` Azure resources using tags:
 
-- `managed-by=az-workload-identity-operator`
+- `managed-by=azure-workload-identity-operator`
 - `workload-identity-uid=<kubernetes-uid>`
 - `created-by-operator=true|false`
 - `operator-api-group=workloadidentity.azure.micosolutions.se`
@@ -133,7 +133,7 @@ The operator tracks created/adopted `WorkloadIdentity` Azure resources using tag
 The operator tracks created/adopted ServiceAccounts using labels:
 
 - `azure.workload.identity/use=true`
-- `workloadidentity.azure.micosolutions.se/managed-by=az-workload-identity-operator`
+- `workloadidentity.azure.micosolutions.se/managed-by=azure-workload-identity-operator`
 - `workloadidentity.azure.micosolutions.se/workload-identity-uid=<kubernetes-uid>`
 - `workloadidentity.azure.micosolutions.se/created-by-operator=true|false`
 

@@ -2,7 +2,7 @@ apiVersion: workloadidentity.azure.micosolutions.se/v1alpha1
 kind: WorkloadIdentity
 metadata:
   labels:
-    app.kubernetes.io/name: az-workload-identity-operator
+    app.kubernetes.io/name: azure-workload-identity-operator
     app.kubernetes.io/managed-by: kustomize
   name: workloadidentity-sample
 spec:

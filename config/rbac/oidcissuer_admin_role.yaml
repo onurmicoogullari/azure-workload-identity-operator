@@ -1,4 +1,4 @@
-# This rule is not used by the project az-workload-identity-operator itself.
+# This rule is not used by the project azure-workload-identity-operator itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
 # Grants full permissions ('*') over workloadidentity.azure.micosolutions.se.
@@ -9,7 +9,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
-    app.kubernetes.io/name: az-workload-identity-operator
+    app.kubernetes.io/name: azure-workload-identity-operator
     app.kubernetes.io/managed-by: kustomize
   name: oidcissuer-admin-role
 rules:

@@ -1,4 +1,4 @@
-# az-workload-identity-operator
+# azure-workload-identity-operator
 
 ## Deploy
 
