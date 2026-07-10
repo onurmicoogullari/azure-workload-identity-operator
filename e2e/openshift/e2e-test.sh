@@ -24,6 +24,7 @@ Optional env:
   RUN_OPERATOR_LOCALLY                        default: true (TODO: switch to false after in-cluster deploy support is added)
   OPERATOR_READY_TIMEOUT                      default: WAIT_TIMEOUT
   OPERATOR_HEALTH_PROBE_BIND_ADDRESS          default: first available localhost port
+  OPERATOR_OIDC_ISSUER_REFRESH_INTERVAL       default: 1m
   OPERATOR_LOG_FILE                           default: temp file
   OPERATOR_WEBHOOK_URL                        default: https://127.0.0.1:9443/validate-workloadidentity-azure-micosolutions-se-v1alpha1-oidcissuer
                                                 local mode uses this to test webhook handler logic, not API server admission integration
@@ -57,6 +58,7 @@ Optional env:
   SIGNING_KEY_SECRET_NAME                     default: bound-service-account-signing-key
   SIGNING_KEY_SECRET_KEY                      default: service-account.pub
   VERIFY_SIGNING_KEY_ROTATION                 default: true
+  VERIFY_OIDC_ISSUER_PERIODIC_REFRESH         default: VERIFY_SIGNING_KEY_ROTATION
   RETIRING_SIGNING_KEY_SECRET_NAMESPACE       default: NAMESPACE
   RETIRING_SIGNING_KEY_SECRET_NAME            default: azwi-crc-retiring-signing-key
   RETIRING_SIGNING_KEY_SECRET_KEY             default: service-account.pub
@@ -93,6 +95,7 @@ log() {
   local operation=${1:-INFO}
   local message
   local prefix
+  ensure_step_started
   if (($# > 0)); then
     shift
   fi
@@ -100,8 +103,54 @@ log() {
   prefix=$(log_prefix "$operation")
 
   while IFS= read -r line; do
-    printf '%b %s\n' "$prefix" "$line" >&2
+    printf '   %b %s\n' "$prefix" "$line" >&3
   done <<<"$message"
+}
+
+ensure_step_started() {
+  if [[ -z ${current_script_step:-} ]]; then
+    begin_step 1
+  fi
+}
+
+begin_step() {
+  local step=$1
+  local description
+
+  if [[ ${current_script_step:-} == "$step" ]]; then
+    return
+  fi
+
+  description=$(script_step_description "$step")
+  current_script_step=$step
+  printf '\n%s. %s\n' "$step" "$description" >&3
+}
+
+script_step_description() {
+  case "$1" in
+    1) printf 'Install Azure Workload Identity webhook.' ;;
+    2) printf 'Patch webhook deployment for OpenShift UID/SCC compatibility.' ;;
+    3) printf 'Install operator CRDs.' ;;
+    4) printf 'Start the operator locally.' ;;
+    5) printf 'Create the test namespace.' ;;
+    6) printf 'Create OIDCIssuer/default.' ;;
+    7) printf 'Grant blob upload access for OIDC document publishing.' ;;
+    8) printf 'Wait for OIDCIssuer/default Ready and published issuer URL.' ;;
+    9) printf 'Verify previous OpenShift service-account issuer was captured.' ;;
+    10) printf 'Add a test retiring signing key and verify JWKS has active + retiring keys.' ;;
+    11) printf 'Wait for OpenShift to use the new issuer and mint tokens with that iss.' ;;
+    12) printf 'Replace the retiring key Secret only, then verify periodic refresh republishes it.' ;;
+    13) printf 'Create Key Vault.' ;;
+    14) printf 'Create WorkloadIdentity.' ;;
+    15) printf 'Verify conflict handling for ServiceAccount and federated credential conflicts.' ;;
+    16) printf 'Upload a real Key Vault secret and assign read access.' ;;
+    17) printf 'Build and run the OpenShift Job.' ;;
+    18) printf 'Verify the Job reads the Key Vault secret using workload identity.' ;;
+    19) printf 'Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.' ;;
+    20) printf 'During cleanup, verify deletion is also rejected while OpenShift still references the issuer.' ;;
+    21) printf 'Restore OpenShift issuer, delete resources, and verify Azure cleanup.' ;;
+    *) printf 'Run OpenShift e2e step.' ;;
+  esac
 }
 
 log_prefix() {
@@ -133,16 +182,35 @@ should_color_logs() {
   if [[ ${FORCE_COLOR:-} == "1" || ${CLICOLOR_FORCE:-} == "1" ]]; then
     return 0
   fi
-  [[ -t 2 && ${TERM:-} != "dumb" ]]
+  [[ -t 3 && ${TERM:-} != "dumb" ]]
 }
 
 indent_output() {
+  local indent="            "
+  local columns
+  local content_width
+  local folded_line
+
+  columns=$(tput cols 2>/dev/null || printf '120')
+  content_width=$((columns - ${#indent}))
+  if ((content_width < 20)); then
+    content_width=20
+  fi
+
   while IFS= read -r line; do
-    printf '         %s\n' "$line"
+    if [[ -z $line ]]; then
+      printf '%s\n' "$indent"
+      continue
+    fi
+    while IFS= read -r folded_line; do
+      printf '%s%s\n' "$indent" "$folded_line"
+    done < <(printf '%s\n' "$line" | fold -s -w "$content_width")
   done
 }
 
-exec > >(indent_output)
+current_script_step=""
+exec 3>&2
+exec > >(indent_output) 2> >(indent_output >&3)
 
 die() {
   primary_failure=$*
@@ -205,6 +273,7 @@ cleanup_incomplete_webhook_helm_release=${CLEANUP_INCOMPLETE_WEBHOOK_HELM_RELEAS
 install_operator_crds=${INSTALL_OPERATOR_CRDS:-true}
 run_operator_locally=${RUN_OPERATOR_LOCALLY:-true} # TODO: default to false after this script deploys the operator in-cluster.
 operator_ready_timeout=${OPERATOR_READY_TIMEOUT:-${WAIT_TIMEOUT:-10m}}
+operator_oidc_issuer_refresh_interval=${OPERATOR_OIDC_ISSUER_REFRESH_INTERVAL:-1m}
 if [[ -n ${OPERATOR_HEALTH_PROBE_BIND_ADDRESS:-} ]]; then
   operator_health_probe_bind_address=$OPERATOR_HEALTH_PROBE_BIND_ADDRESS
 else
@@ -247,6 +316,7 @@ SIGNING_KEY_SECRET_NAMESPACE=${SIGNING_KEY_SECRET_NAMESPACE:-openshift-kube-apis
 SIGNING_KEY_SECRET_NAME=${SIGNING_KEY_SECRET_NAME:-bound-service-account-signing-key}
 SIGNING_KEY_SECRET_KEY=${SIGNING_KEY_SECRET_KEY:-service-account.pub}
 verify_signing_key_rotation=${VERIFY_SIGNING_KEY_ROTATION:-true}
+verify_oidc_issuer_periodic_refresh=${VERIFY_OIDC_ISSUER_PERIODIC_REFRESH:-$verify_signing_key_rotation}
 RETIRING_SIGNING_KEY_SECRET_NAMESPACE=${RETIRING_SIGNING_KEY_SECRET_NAMESPACE:-$NAMESPACE}
 RETIRING_SIGNING_KEY_SECRET_NAME=${RETIRING_SIGNING_KEY_SECRET_NAME:-azwi-crc-retiring-signing-key}
 RETIRING_SIGNING_KEY_SECRET_KEY=${RETIRING_SIGNING_KEY_SECRET_KEY:-service-account.pub}
@@ -379,8 +449,10 @@ cleanup_oidc_issuer() {
   oidc_deleted=false
   if [[ $applied_oidc_issuer == "true" ]]; then
     if [[ $verify_openshift_handoff_guard == "true" ]]; then
+      begin_step 20
       assert_oidcissuer_delete_rejected_by_openshift_service_account_issuer || return 1
     fi
+    begin_step 21
     handoff_openshift_service_account_issuer_before_oidcissuer_delete || return 1
     if [[ $verify_oidc_resource_group_deleted == "true" && $OIDC_ISSUER_DELETION_POLICY == "Delete" ]]; then
       log WATCH "Deleting OIDCIssuer/default and waiting for its finalizer to delete Azure resource group $AZURE_RESOURCE_GROUP_NAME"
@@ -974,12 +1046,22 @@ cleanup() {
   local final_result_message
   local final_result_operation
   local initial_exit_code=$exit_code
+  local failed_step=${current_script_step:-unknown}
   local verify_openshift_handoff_guard=false
   set +e
 
   [[ $initial_exit_code -eq 0 ]] && verify_openshift_handoff_guard=true
 
-  log CLEANUP "Cleaning up e2e resources"
+  if [[ $verify_openshift_handoff_guard == "true" ]]; then
+    begin_step 20
+  else
+    begin_step 21
+  fi
+  if [[ $initial_exit_code -eq 0 ]]; then
+    log CLEANUP "Cleaning up e2e resources"
+  else
+    log CLEANUP "Cleaning up e2e resources after failure in step $failed_step"
+  fi
 
   cleanup_step "delete Job" cleanup_job
   cleanup_step "delete conflict WorkloadIdentity CR" cleanup_conflict_workload_identity
@@ -1254,6 +1336,7 @@ install_workload_identity_webhook() {
       dump_workload_identity_webhook_diagnostics
       exit 1
     fi
+    begin_step 2
     patch_workload_identity_webhook_for_openshift
   else
     helm_args+=(--wait)
@@ -1431,6 +1514,7 @@ start_local_operator() {
     cd "$repo_root"
     go run ./cmd/main.go \
       --health-probe-bind-address="$operator_health_probe_bind_address" \
+      --oidc-issuer-refresh-interval="$operator_oidc_issuer_refresh_interval" \
       --webhook-cert-path="$operator_webhook_cert_dir"
   ) >"$operator_log_file" 2>&1 &
   operator_pid=$!
@@ -1557,6 +1641,55 @@ wait_for_service_account_token_issuer() {
   oc get clusteroperator kube-apiserver >&2 || true
   oc describe clusteroperator kube-apiserver >&2 || true
   oc get authentication.config.openshift.io cluster -o yaml >&2 || true
+  return 1
+}
+
+blocking_scheduling_taints() {
+  local taints=$1
+  local taint
+  local effect
+  local blocking_taints=()
+  local taint_list=()
+
+  IFS=',' read -ra taint_list <<<"$taints"
+  for taint in "${taint_list[@]}"; do
+    [[ -z $taint ]] && continue
+    effect=${taint##*=}
+    if [[ $effect == "NoSchedule" || $effect == "NoExecute" ]]; then
+      blocking_taints+=("$taint")
+    fi
+  done
+
+  printf '%s' "${blocking_taints[*]}"
+}
+
+wait_for_schedulable_node() {
+  local timeout=$1
+  local deadline
+  local node_lines
+  local node_name
+  local ready_status
+  local taints
+  local blocking_taints
+  deadline=$((SECONDS + $(duration_seconds "$timeout")))
+
+  log WATCH "Waiting for an OpenShift node to be Ready and schedulable"
+  while ((SECONDS < deadline)); do
+    node_lines=$(oc get nodes -o go-template='{{range .items}}{{.metadata.name}}{{"\t"}}{{range .status.conditions}}{{if eq .type "Ready"}}{{.status}}{{end}}{{end}}{{"\t"}}{{range .spec.taints}}{{.key}}={{.effect}}{{","}}{{end}}{{"\n"}}{{end}}' 2>/dev/null || true)
+    while IFS=$'\t' read -r node_name ready_status taints; do
+      [[ -z $node_name ]] && continue
+      blocking_taints=$(blocking_scheduling_taints "$taints")
+      if [[ $ready_status == "True" && -z $blocking_taints ]]; then
+        log VERIFY "OpenShift node $node_name is Ready and schedulable"
+        return
+      fi
+    done <<<"$node_lines"
+    sleep_until_deadline "$deadline" 10 || true
+  done
+
+  log ERROR "Timed out waiting for an OpenShift node to be Ready without NoSchedule/NoExecute taints"
+  oc get nodes -o wide >&2 || true
+  oc describe nodes >&2 || true
   return 1
 }
 
@@ -1709,25 +1842,37 @@ verify_oidcissuer_captured_previous_service_account_issuer() {
 }
 
 create_retiring_signing_key_secret() {
-  local private_key_file
-  local public_key_file
-
   if [[ $verify_signing_key_rotation != "true" ]]; then
     return
   fi
 
-  private_key_file="$tmpdir/retiring-signing-key.pem"
-  public_key_file="$tmpdir/retiring-signing-key.pub"
+  apply_generated_signing_key_secret \
+    "$RETIRING_SIGNING_KEY_SECRET_NAMESPACE" \
+    "$RETIRING_SIGNING_KEY_SECRET_NAME" \
+    "$RETIRING_SIGNING_KEY_SECRET_KEY" \
+    "retiring-signing-key"
+  created_retiring_signing_key_secret=true
+}
 
-  log CREATE "Creating retiring signing key Secret $RETIRING_SIGNING_KEY_SECRET_NAMESPACE/$RETIRING_SIGNING_KEY_SECRET_NAME"
+apply_generated_signing_key_secret() {
+  local namespace=$1
+  local name=$2
+  local key=$3
+  local file_prefix=$4
+  local private_key_file
+  local public_key_file
+
+  private_key_file="$tmpdir/$file_prefix.pem"
+  public_key_file="$tmpdir/$file_prefix.pub"
+
+  log CREATE "Creating signing key Secret $namespace/$name"
   openssl genrsa -out "$private_key_file" 2048 >/dev/null 2>&1
   openssl rsa -in "$private_key_file" -pubout -out "$public_key_file" >/dev/null 2>&1
-  kubectl create secret generic "$RETIRING_SIGNING_KEY_SECRET_NAME" \
-    -n "$RETIRING_SIGNING_KEY_SECRET_NAMESPACE" \
-    --from-file="$RETIRING_SIGNING_KEY_SECRET_KEY=$public_key_file" \
+  kubectl create secret generic "$name" \
+    -n "$namespace" \
+    --from-file="$key=$public_key_file" \
     --dry-run=client \
     -o yaml | kubectl apply -f - >/dev/null
-  created_retiring_signing_key_secret=true
 }
 
 wait_for_oidcissuer_signing_key_states() {
@@ -1782,6 +1927,78 @@ wait_for_jwks_key_count() {
   log ERROR "Timed out waiting for JWKS to contain $expected_count key(s)"
   [[ -n ${jwks:-} ]] && printf '%s\n' "$jwks" >&2
   return 1
+}
+
+oidcissuer_retiring_key_id() {
+  kubectl get oidcissuer default -o jsonpath='{range .status.signingKeys[?(@.state=="Retiring")]}{.kid}{"\n"}{end}' 2>/dev/null | sed -n '1p'
+}
+
+wait_for_retiring_signing_key_periodic_refresh() {
+  local issuer_url=$1
+  local previous_kid=$2
+  local expected_generation=$3
+  local timeout=$4
+  local deadline
+  local generation
+  local current_kid
+  local jwks
+  deadline=$((SECONDS + $(duration_seconds "$timeout")))
+
+  log WATCH "Waiting for OIDCIssuer/default periodic refresh to publish the replaced retiring signing key"
+  while ((SECONDS < deadline)); do
+    generation=$(kubectl get oidcissuer default -o jsonpath='{.metadata.generation}' 2>/dev/null || true)
+    if [[ -n $generation && $generation != "$expected_generation" ]]; then
+      log ERROR "OIDCIssuer/default generation changed from $expected_generation to $generation while verifying periodic refresh"
+      kubectl get oidcissuer default -o yaml >&2 || true
+      return 1
+    fi
+
+    current_kid=$(oidcissuer_retiring_key_id)
+    if [[ -n $current_kid && $current_kid != "$previous_kid" ]]; then
+      jwks=$(curl -fsS "$issuer_url/openid/v1/jwks" 2>/dev/null || true)
+      if [[ $jwks == *"\"kid\":\"$current_kid\""* || $jwks == *"\"kid\": \"$current_kid\""* ]]; then
+        log VERIFY "OIDCIssuer/default periodic refresh republished retiring signing key $current_kid without an OIDCIssuer spec update"
+        return
+      fi
+    fi
+    sleep 5
+  done
+
+  log ERROR "Timed out waiting for periodic refresh to publish replaced retiring signing key"
+  kubectl get oidcissuer default -o yaml >&2 || true
+  curl -fsS "$issuer_url/openid/v1/jwks" >&2 || true
+  return 1
+}
+
+verify_oidc_issuer_periodic_refresh_publish() {
+  local issuer_url=$1
+  local previous_kid
+  local generation
+
+  if [[ $verify_oidc_issuer_periodic_refresh != "true" ]]; then
+    return
+  fi
+  if [[ $verify_signing_key_rotation != "true" ]]; then
+    log SKIP "Skipping OIDCIssuer periodic refresh verification because signing key rotation verification is disabled"
+    return
+  fi
+
+  previous_kid=$(oidcissuer_retiring_key_id)
+  if [[ -z $previous_kid ]]; then
+    log ERROR "OIDCIssuer/default has no retiring signing key to replace for periodic refresh verification"
+    kubectl get oidcissuer default -o yaml >&2 || true
+    return 1
+  fi
+  generation=$(kubectl get oidcissuer default -o jsonpath='{.metadata.generation}')
+
+  log UPDATE "Replacing retiring signing key Secret $RETIRING_SIGNING_KEY_SECRET_NAMESPACE/$RETIRING_SIGNING_KEY_SECRET_NAME without changing OIDCIssuer/default"
+  apply_generated_signing_key_secret \
+    "$RETIRING_SIGNING_KEY_SECRET_NAMESPACE" \
+    "$RETIRING_SIGNING_KEY_SECRET_NAME" \
+    "$RETIRING_SIGNING_KEY_SECRET_KEY" \
+    "periodic-refresh-retiring-signing-key"
+
+  wait_for_retiring_signing_key_periodic_refresh "$issuer_url" "$previous_kid" "$generation" "$wait_timeout" || return 1
 }
 
 verify_signing_key_rotation_publish() {
@@ -2154,6 +2371,58 @@ EOF
   wait_for_workloadidentity_ready_false_reason "$federated_credential_conflict_name" FederatedIdentityCredentialConflict "$wait_timeout" || return 1
 }
 
+wait_for_job_completion() {
+  local name=$1
+  local namespace=$2
+  local timeout=$3
+  local deadline
+  local succeeded
+  local failed
+  deadline=$((SECONDS + $(duration_seconds "$timeout")))
+
+  while ((SECONDS < deadline)); do
+    succeeded=$(kubectl get job "$name" -n "$namespace" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
+    failed=$(kubectl get job "$name" -n "$namespace" -o jsonpath='{.status.failed}' 2>/dev/null || true)
+    if [[ ${succeeded:-0} =~ ^[0-9]+$ && ${succeeded:-0} -gt 0 ]]; then
+      kubectl wait --for=condition=complete "job/$name" -n "$namespace" --timeout=30s >/dev/null || true
+      return
+    fi
+    if [[ ${failed:-0} =~ ^[0-9]+$ && ${failed:-0} -gt 0 ]]; then
+      log ERROR "Job/$name failed"
+      return 1
+    fi
+    sleep 5
+  done
+
+  log ERROR "Timed out waiting for Job/$name to complete"
+  return 1
+}
+
+dump_job_diagnostics() {
+  local name=$1
+  local namespace=$2
+  local pods
+  local pod
+
+  log READ "Describing Job/$name"
+  kubectl describe "job/$name" -n "$namespace" >&2 || true
+
+  pods=$(kubectl get pods -n "$namespace" -l "job-name=$name" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+  if [[ -z $pods ]]; then
+    log ERROR "No Pods found for Job/$name"
+    return
+  fi
+
+  while IFS= read -r pod; do
+    [[ -z $pod ]] && continue
+    log READ "Describing Pod/$pod"
+    kubectl describe pod "$pod" -n "$namespace" >&2 || true
+    log READ "Printing Pod/$pod logs"
+    kubectl logs pod/"$pod" -n "$namespace" --all-containers=true >&2 || true
+    kubectl logs pod/"$pod" -n "$namespace" --all-containers=true --previous >&2 || true
+  done <<<"$pods"
+}
+
 render() {
   local file=$1
   local content
@@ -2173,23 +2442,32 @@ render() {
 
 tmpdir=$(mktemp -d)
 
+begin_step 1
 assert_oidc_resource_group_absent
 assert_workload_identity_resource_group_absent
 assert_key_vault_resource_group_absent
 install_workload_identity_webhook
+
+begin_step 3
 install_operator_custom_resource_definitions
+
+begin_step 4
 start_local_operator
 
+begin_step 5
 if ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
   log CREATE "Creating test namespace $NAMESPACE"
   kubectl create namespace "$NAMESPACE"
   created_test_namespace=true
 fi
+
+begin_step 6
 capture_original_openshift_service_account_issuer
 log APPLY "Applying OIDCIssuer/default"
 render "$script_dir/oidc-issuer.yaml" | kubectl apply -f -
 applied_oidc_issuer=true
 
+begin_step 7
 if [[ $assign_oidc_storage_blob_role == "true" ]]; then
   operator_principal_id=${OPERATOR_AZURE_PRINCIPAL_ID:-}
   operator_principal_type=${OPERATOR_AZURE_PRINCIPAL_TYPE:-}
@@ -2204,25 +2482,40 @@ if [[ $assign_oidc_storage_blob_role == "true" ]]; then
   ensure_role_assignment "$operator_principal_id" "$operator_principal_type" "$oidc_storage_blob_role" "$storage_account_id"
 fi
 
+begin_step 8
 log WATCH "Waiting for OIDCIssuer/default to become Ready"
 kubectl wait --for=condition=Ready oidcissuer/default --timeout="$wait_timeout"
 issuer_url=$(kubectl get oidcissuer default -o jsonpath='{.status.issuerURL}')
 if [[ -z $issuer_url ]]; then
   die "OIDCIssuer default is missing status.issuerURL"
 fi
+
+begin_step 9
 verify_oidcissuer_captured_previous_service_account_issuer "$issuer_url"
+
+begin_step 10
 verify_signing_key_rotation_publish "$issuer_url"
+
+begin_step 11
 wait_for_openshift_api_server_rollout "$issuer_url"
 
+begin_step 12
+verify_oidc_issuer_periodic_refresh_publish "$issuer_url"
+
+begin_step 13
 ensure_key_vault_exists
 
+begin_step 14
 log APPLY "Applying WorkloadIdentity/$WORKLOAD_IDENTITY_NAME"
 render "$script_dir/workload-identity.yaml" | kubectl apply -f -
 applied_workload_identity=true
 log WATCH "Waiting for WorkloadIdentity/$WORKLOAD_IDENTITY_NAME to become Ready"
 kubectl wait --for=condition=Ready "workloadidentity/$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" --timeout="$wait_timeout"
+
+begin_step 15
 verify_workload_identity_conflict_reconciliation
 
+begin_step 16
 if [[ -z $vault_id ]]; then
   if ! vault_id=$(az keyvault show -n "$KEY_VAULT_NAME" --query id -o tsv 2>/dev/null); then
     die "Key Vault $KEY_VAULT_NAME was not found; create it first or set KEY_VAULT_NAME to an existing vault"
@@ -2249,6 +2542,9 @@ if [[ $assign_role == "true" ]]; then
   ensure_role_assignment "$principal_id" ServicePrincipal "$key_vault_role" "$vault_id"
 fi
 
+begin_step 17
+wait_for_schedulable_node "$wait_timeout"
+
 reader_dir="$script_dir/keyvault-secret-reader"
 if [[ ! -f "$reader_dir/Dockerfile" ]]; then
   die "Missing Key Vault secret reader app at $reader_dir"
@@ -2262,6 +2558,8 @@ fi
 log BUILD "Building Key Vault secret reader image $IMAGE_NAME"
 oc start-build "$IMAGE_NAME" --from-dir="$reader_dir" --follow -n "$NAMESPACE"
 
+wait_for_schedulable_node "$wait_timeout"
+
 if kubectl get job "$JOB_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
   log DELETE "Deleting previous Job/$JOB_NAME"
   cleanup_kubernetes_resource "job/$JOB_NAME" "$NAMESPACE"
@@ -2270,11 +2568,14 @@ log APPLY "Applying Job/$JOB_NAME"
 render "$script_dir/job.yaml" | kubectl apply -f -
 applied_job=true
 
+begin_step 18
 log WATCH "Waiting for Job/$JOB_NAME to complete"
-if ! kubectl wait --for=condition=complete "job/$JOB_NAME" -n "$NAMESPACE" --timeout="$wait_timeout"; then
-  kubectl logs "job/$JOB_NAME" -n "$NAMESPACE" || true
+if ! wait_for_job_completion "$JOB_NAME" "$NAMESPACE" "$wait_timeout"; then
+  dump_job_diagnostics "$JOB_NAME" "$NAMESPACE"
   exit 1
 fi
 log READ "Printing Job/$JOB_NAME logs"
 kubectl logs "job/$JOB_NAME" -n "$NAMESPACE"
+
+begin_step 19
 assert_oidcissuer_delete_rejected_by_workload_identity

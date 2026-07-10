@@ -42,11 +42,13 @@ import (
 const oidcIssuerFinalizer = "workloadidentity.azure.micosolutions.se/oidcissuer-finalizer"
 
 const (
-	defaultSigningKeyRefreshInterval       = 5 * time.Minute
 	defaultServiceAccountIssuerCheckPeriod = time.Minute
 	blockingWorkloadIdentityReferenceLimit = 5
 	openshiftAuthenticationName            = "cluster"
 )
+
+// DefaultOIDCIssuerRefreshInterval is the default interval for revalidating OIDCIssuer publishing.
+const DefaultOIDCIssuerRefreshInterval = 5 * time.Minute
 
 // OpenShiftServiceAccountIssuerManager manages the OpenShift service account issuer.
 type OpenShiftServiceAccountIssuerManager interface {
@@ -67,7 +69,7 @@ type OIDCIssuerReconciler struct {
 	Publisher                     oidc.Publisher
 	OpenShiftServiceAccountIssuer OpenShiftServiceAccountIssuerManager
 	ServiceAccountTokens          ServiceAccountTokenClient
-	SigningKeyRefreshInterval     time.Duration
+	OIDCIssuerRefreshInterval     time.Duration
 }
 
 // +kubebuilder:rbac:groups=workloadidentity.azure.micosolutions.se,resources=oidcissuers,verbs=get;list;watch;create;update;patch;delete
@@ -132,14 +134,14 @@ func (r *OIDCIssuerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: r.signingKeyRefreshInterval()}, nil
+	return ctrl.Result{RequeueAfter: r.oidcIssuerRefreshInterval()}, nil
 }
 
-func (r *OIDCIssuerReconciler) signingKeyRefreshInterval() time.Duration {
-	if r.SigningKeyRefreshInterval > 0 {
-		return r.SigningKeyRefreshInterval
+func (r *OIDCIssuerReconciler) oidcIssuerRefreshInterval() time.Duration {
+	if r.OIDCIssuerRefreshInterval > 0 {
+		return r.OIDCIssuerRefreshInterval
 	}
-	return defaultSigningKeyRefreshInterval
+	return DefaultOIDCIssuerRefreshInterval
 }
 
 func (r *OIDCIssuerReconciler) reconcileDelete(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer) (ctrl.Result, error) {

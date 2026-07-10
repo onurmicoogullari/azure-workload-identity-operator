@@ -107,6 +107,11 @@ OpenShift test image, validates Key Vault access, and verifies cleanup. If the
 script exposes a bug, fix it and repeat from `crc delete -f` so each e2e pass
 starts from a clean CRC cluster.
 
+When changing the OpenShift e2e script flow, assertions, setup, or cleanup,
+consider whether `e2e/openshift/README.md` should be updated too. In
+particular, keep the "What The Script Tests, Step By Step" section in sync with
+the behavior exercised by `e2e/openshift/e2e-test.sh`.
+
 Operational notes from a successful CRC run:
 
 - `crc start` may print the kubeadmin password. Capture it for `oc login`; do

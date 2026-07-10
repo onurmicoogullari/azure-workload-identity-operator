@@ -155,7 +155,7 @@ var _ = Describe("OIDCIssuer Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(defaultSigningKeyRefreshInterval))
+			Expect(result.RequeueAfter).To(Equal(DefaultOIDCIssuerRefreshInterval))
 			Expect(publisher.publishes).To(Equal(1))
 
 			updated := &workloadidentityv1alpha1.OIDCIssuer{}
@@ -174,7 +174,7 @@ var _ = Describe("OIDCIssuer Controller", func() {
 			Expect(condition.Reason).To(Equal("Published"))
 		})
 
-		It("uses a custom signing key refresh interval", func() {
+		It("uses a custom OIDCIssuer refresh interval", func() {
 			publisher := &fakeOIDCDocumentPublisher{published: oidc.PublishedDocuments{IssuerURL: testIssuerURL}}
 			resource := validOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -183,7 +183,7 @@ var _ = Describe("OIDCIssuer Controller", func() {
 				Client:                    k8sClient,
 				Scheme:                    k8sClient.Scheme(),
 				Publisher:                 publisher,
-				SigningKeyRefreshInterval: time.Minute,
+				OIDCIssuerRefreshInterval: time.Minute,
 			}
 
 			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
