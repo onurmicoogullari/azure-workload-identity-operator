@@ -25,6 +25,7 @@ Optional env:
   OPERATOR_READY_TIMEOUT                      default: WAIT_TIMEOUT
   OPERATOR_HEALTH_PROBE_BIND_ADDRESS          default: first available localhost port
   OPERATOR_OIDC_ISSUER_REFRESH_INTERVAL       default: 1m
+  OPERATOR_WORKLOAD_IDENTITY_REFRESH_INTERVAL default: 1m
   OPERATOR_LOG_FILE                           default: temp file
   OPERATOR_WEBHOOK_URL                        default: https://127.0.0.1:9443/validate-workloadidentity-azure-micosolutions-se-v1alpha1-oidcissuer
                                                 local mode uses this to test webhook handler logic, not API server admission integration
@@ -66,6 +67,7 @@ Optional env:
   OIDC_ISSUER_DELETION_POLICY                 default: Delete
   WORKLOAD_IDENTITY_DELETION_POLICY           default: Delete
   VERIFY_WORKLOAD_IDENTITY_CONFLICTS          default: true
+  VERIFY_WORKLOAD_IDENTITY_AZURE_DRIFT        default: true
   IMAGE_NAME                                  default: azwi-crc-test
   JOB_NAME                                    default: azwi-crc-test
   WAIT_TIMEOUT                                default: 10m
@@ -146,9 +148,10 @@ script_step_description() {
     16) printf 'Upload a real Key Vault secret and assign read access.' ;;
     17) printf 'Build and run the OpenShift Job.' ;;
     18) printf 'Verify the Job reads the Key Vault secret using workload identity.' ;;
-    19) printf 'Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.' ;;
-    20) printf 'During cleanup, verify deletion is also rejected while OpenShift still references the issuer.' ;;
-    21) printf 'Restore OpenShift issuer, delete resources, and verify Azure cleanup.' ;;
+    19) printf 'Mutate Azure federated credential and verify WorkloadIdentity periodic reconcile repairs it.' ;;
+    20) printf 'Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.' ;;
+    21) printf 'During cleanup, verify deletion is also rejected while OpenShift still references the issuer.' ;;
+    22) printf 'Restore OpenShift issuer, delete resources, and verify Azure cleanup.' ;;
     *) printf 'Run OpenShift e2e step.' ;;
   esac
 }
@@ -282,6 +285,7 @@ else
   fi
 fi
 operator_log_file=${OPERATOR_LOG_FILE:-}
+operator_workload_identity_refresh_interval=${OPERATOR_WORKLOAD_IDENTITY_REFRESH_INTERVAL:-1m}
 operator_webhook_url=${OPERATOR_WEBHOOK_URL:-https://127.0.0.1:9443/validate-workloadidentity-azure-micosolutions-se-v1alpha1-oidcissuer}
 ensure_key_vault=${ENSURE_KEY_VAULT:-true}
 enable_key_vault_rbac=${ENABLE_KEY_VAULT_RBAC:-true}
@@ -324,6 +328,7 @@ OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER=${OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUE
 OIDC_ISSUER_DELETION_POLICY=${OIDC_ISSUER_DELETION_POLICY:-Delete}
 WORKLOAD_IDENTITY_DELETION_POLICY=${WORKLOAD_IDENTITY_DELETION_POLICY:-Delete}
 verify_workload_identity_conflicts=${VERIFY_WORKLOAD_IDENTITY_CONFLICTS:-true}
+verify_workload_identity_azure_drift=${VERIFY_WORKLOAD_IDENTITY_AZURE_DRIFT:-true}
 IMAGE_NAME=${IMAGE_NAME:-azwi-crc-test}
 JOB_NAME=${JOB_NAME:-azwi-crc-test}
 KEY_VAULT_READ_TIMEOUT_SECONDS=${KEY_VAULT_READ_TIMEOUT_SECONDS:-300}
@@ -408,15 +413,18 @@ cleanup_job() {
 cleanup_conflict_workload_identity() {
   if [[ $applied_conflict_workload_identity == "true" ]]; then
     cleanup_kubernetes_resource workloadidentity/azwi-sa-conflict "$NAMESPACE" || return $?
+    applied_conflict_workload_identity=false
   fi
   if [[ $applied_federated_credential_conflict_workload_identity == "true" ]]; then
     cleanup_kubernetes_resource workloadidentity/azwi-fic-conflict "$NAMESPACE" || return $?
+    applied_federated_credential_conflict_workload_identity=false
   fi
 }
 
 cleanup_conflict_service_account() {
   if [[ $created_conflict_service_account == "true" ]]; then
     cleanup_kubernetes_resource serviceaccount/azwi-sa-conflict "$NAMESPACE" || return $?
+    created_conflict_service_account=false
   fi
 }
 
@@ -449,10 +457,10 @@ cleanup_oidc_issuer() {
   oidc_deleted=false
   if [[ $applied_oidc_issuer == "true" ]]; then
     if [[ $verify_openshift_handoff_guard == "true" ]]; then
-      begin_step 20
+      begin_step 21
       assert_oidcissuer_delete_rejected_by_openshift_service_account_issuer || return 1
     fi
-    begin_step 21
+    begin_step 22
     handoff_openshift_service_account_issuer_before_oidcissuer_delete || return 1
     if [[ $verify_oidc_resource_group_deleted == "true" && $OIDC_ISSUER_DELETION_POLICY == "Delete" ]]; then
       log WATCH "Deleting OIDCIssuer/default and waiting for its finalizer to delete Azure resource group $AZURE_RESOURCE_GROUP_NAME"
@@ -1053,9 +1061,9 @@ cleanup() {
   [[ $initial_exit_code -eq 0 ]] && verify_openshift_handoff_guard=true
 
   if [[ $verify_openshift_handoff_guard == "true" ]]; then
-    begin_step 20
-  else
     begin_step 21
+  else
+    begin_step 22
   fi
   if [[ $initial_exit_code -eq 0 ]]; then
     log CLEANUP "Cleaning up e2e resources"
@@ -1515,6 +1523,7 @@ start_local_operator() {
     go run ./cmd/main.go \
       --health-probe-bind-address="$operator_health_probe_bind_address" \
       --oidc-issuer-refresh-interval="$operator_oidc_issuer_refresh_interval" \
+      --workload-identity-refresh-interval="$operator_workload_identity_refresh_interval" \
       --webhook-cert-path="$operator_webhook_cert_dir"
   ) >"$operator_log_file" 2>&1 &
   operator_pid=$!
@@ -1691,6 +1700,35 @@ wait_for_schedulable_node() {
   oc get nodes -o wide >&2 || true
   oc describe nodes >&2 || true
   return 1
+}
+
+prepare_key_vault_secret_reader_build_context() {
+  local reader_dir=$1
+  local build_context=$2
+  local node_arch
+
+  if [[ ! -f "$reader_dir/main.go" || ! -f "$reader_dir/go.mod" || ! -f "$reader_dir/go.sum" ]]; then
+    die "Missing Key Vault secret reader app sources at $reader_dir"
+  fi
+
+  node_arch=$(oc get nodes -o jsonpath='{.items[0].status.nodeInfo.architecture}')
+  if [[ -z $node_arch ]]; then
+    die "Could not determine OpenShift node architecture"
+  fi
+
+  mkdir -p "$build_context"
+  log BUILD "Compiling Key Vault secret reader locally for linux/$node_arch"
+  (
+    cd "$reader_dir"
+    CGO_ENABLED=0 GOOS=linux GOARCH="$node_arch" go build -o "$build_context/keyvault-secret-reader" .
+  )
+
+  cat >"$build_context/Dockerfile" <<'EOF'
+FROM gcr.io/distroless/static:nonroot
+COPY keyvault-secret-reader /keyvault-secret-reader
+USER nonroot:nonroot
+ENTRYPOINT ["/keyvault-secret-reader"]
+EOF
 }
 
 openshift_service_account_issuer() {
@@ -2423,6 +2461,65 @@ dump_job_diagnostics() {
   done <<<"$pods"
 }
 
+verify_workload_identity_azure_drift_recovery() {
+  local deadline
+  local credential_tuple
+  local desired_subject
+  local drift_issuer
+  local drift_subject
+  local expected_tuple
+
+  if [[ $verify_workload_identity_azure_drift != "true" ]]; then
+    return
+  fi
+  if [[ $run_operator_locally != "true" ]]; then
+    log SKIP "Skipping WorkloadIdentity Azure drift check because the script only controls refresh interval for the local operator"
+    return
+  fi
+
+  desired_subject="system:serviceaccount:$NAMESPACE:$SERVICE_ACCOUNT_NAME"
+  drift_issuer="https://drift.invalid/$WORKLOAD_IDENTITY_NAME"
+  drift_subject="system:serviceaccount:$NAMESPACE:drifted-$SERVICE_ACCOUNT_NAME"
+  expected_tuple=$issuer_url$'\n'$desired_subject$'\n'api://AzureADTokenExchange
+
+  log UPDATE "Mutating Azure federated credential to verify periodic WorkloadIdentity drift recovery"
+  if ! az identity federated-credential update \
+    --resource-group "$AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME" \
+    --identity-name "$AZURE_USER_ASSIGNED_IDENTITY_NAME" \
+    --name "$AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME" \
+    --issuer "$drift_issuer" \
+    --subject "$drift_subject" \
+    --audiences api://AzureADTokenExchange \
+    -o none; then
+    log ERROR "Failed to mutate Azure federated credential $AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME"
+    return 1
+  fi
+
+  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+  log WATCH "Waiting for WorkloadIdentity periodic reconcile to restore Azure federated credential"
+  while ((SECONDS < deadline)); do
+    credential_tuple=$(az identity federated-credential show \
+      --resource-group "$AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME" \
+      --identity-name "$AZURE_USER_ASSIGNED_IDENTITY_NAME" \
+      --name "$AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME" \
+      --query '[issuer, subject, audiences[0]]' \
+      -o tsv 2>/dev/null || true)
+    if [[ $credential_tuple == "$expected_tuple" ]]; then
+      log VERIFY "WorkloadIdentity periodic reconcile restored Azure federated credential"
+      return
+    fi
+    sleep 10
+  done
+
+  log ERROR "Timed out waiting for WorkloadIdentity periodic reconcile to restore Azure federated credential"
+  az identity federated-credential show \
+    --resource-group "$AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME" \
+    --identity-name "$AZURE_USER_ASSIGNED_IDENTITY_NAME" \
+    --name "$AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME" \
+    -o json >&2 || true
+  return 1
+}
+
 render() {
   local file=$1
   local content
@@ -2514,6 +2611,9 @@ kubectl wait --for=condition=Ready "workloadidentity/$WORKLOAD_IDENTITY_NAME" -n
 
 begin_step 15
 verify_workload_identity_conflict_reconciliation
+log DELETE "Deleting conflict WorkloadIdentity test resources before continuing"
+cleanup_conflict_workload_identity
+cleanup_conflict_service_account
 
 begin_step 16
 if [[ -z $vault_id ]]; then
@@ -2546,9 +2646,8 @@ begin_step 17
 wait_for_schedulable_node "$wait_timeout"
 
 reader_dir="$script_dir/keyvault-secret-reader"
-if [[ ! -f "$reader_dir/Dockerfile" ]]; then
-  die "Missing Key Vault secret reader app at $reader_dir"
-fi
+reader_build_context="$tmpdir/keyvault-secret-reader-build"
+prepare_key_vault_secret_reader_build_context "$reader_dir" "$reader_build_context"
 
 if ! oc get buildconfig "$IMAGE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
   log CREATE "Creating OpenShift BuildConfig/$IMAGE_NAME"
@@ -2556,7 +2655,7 @@ if ! oc get buildconfig "$IMAGE_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
   created_buildconfig=true
 fi
 log BUILD "Building Key Vault secret reader image $IMAGE_NAME"
-oc start-build "$IMAGE_NAME" --from-dir="$reader_dir" --follow -n "$NAMESPACE"
+oc start-build "$IMAGE_NAME" --from-dir="$reader_build_context" --follow -n "$NAMESPACE"
 
 wait_for_schedulable_node "$wait_timeout"
 
@@ -2578,4 +2677,7 @@ log READ "Printing Job/$JOB_NAME logs"
 kubectl logs "job/$JOB_NAME" -n "$NAMESPACE"
 
 begin_step 19
+verify_workload_identity_azure_drift_recovery
+
+begin_step 20
 assert_oidcissuer_delete_rejected_by_workload_identity

@@ -223,6 +223,10 @@ spec:
                 description: principalID is the Azure User Assigned Managed Identity
                   principal ID.
                 type: string
+              serviceAccountUID:
+                description: serviceAccountUID is the UID of the ServiceAccount instance
+                  last reconciled by the controller.
+                type: string
               subject:
                 description: subject is the Kubernetes service account subject trusted
                   by Azure.

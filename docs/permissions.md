@@ -112,16 +112,18 @@ Azure resources have a tag limit. If an adopted resource already has too many ta
 
 ### WorkloadIdentity
 
+`WorkloadIdentity` reconciles periodically re-read the Azure resource group, user assigned managed identity, and federated identity credential, then repair authorized drift. The default base interval is 5 minutes and can be changed with `--workload-identity-refresh-interval`. Each resource receives stable jitter of up to 10% so reconciles do not all reach Azure simultaneously. When no drift exists, reconciliation performs Azure reads and updates the Kubernetes `status.lastReconciledTime`, but does not issue Azure writes. `lastReconciledTime` records reconciliation attempts, including attempts that result in `Ready=False`; use it together with the `Ready` condition and `observedGeneration`.
+
 When `spec.deletionPolicy` is `Retain`, the operator removes its finalizer and leaves Azure resources and the ServiceAccount in place.
 
 When `spec.deletionPolicy` is `Delete`, the operator:
 
-- deletes the federated identity credential named in `spec.azure.federatedIdentityCredentialName`
-- deletes the user assigned managed identity only if it was created by the operator
-- deletes the resource group only if it was created by the operator
+- deletes the federated identity credential named in `spec.azure.federatedIdentityCredentialName` only while its parent user assigned managed identity is still owned by this `WorkloadIdentity`
+- deletes the user assigned managed identity only if it was created by the operator and no other `WorkloadIdentity` references it
+- deletes the resource group only if it was created by the operator and no other `WorkloadIdentity` references it
 - deletes the ServiceAccount only if it was created by the operator
 
-Federated identity credentials do not support tags. The operator therefore treats the configured federated identity credential name as owned by the `WorkloadIdentity`: it is always converged and it is deleted when `spec.deletionPolicy` is `Delete`.
+Federated identity credentials do not support tags. Resource groups and user assigned managed identities may be shared by multiple `WorkloadIdentity` resources, so repair and deletion authorization combines the credential's previously reconciled trust tuple or resource ID with the parent identity's client, principal, and tenant IDs recorded in status. If a user assigned identity is deleted and recreated at the same Azure resource ID, its identity properties change and the operator reports an ownership conflict instead of modifying the replacement.
 
 The operator tracks created/adopted `WorkloadIdentity` Azure resources using tags:
 
@@ -129,6 +131,10 @@ The operator tracks created/adopted `WorkloadIdentity` Azure resources using tag
 - `workload-identity-uid=<kubernetes-uid>`
 - `created-by-operator=true|false`
 - `operator-api-group=workloadidentity.azure.micosolutions.se`
+
+Azure ownership tags record which `WorkloadIdentity` currently carries deletion responsibility, but they do not make a resource group or user assigned identity exclusive. During deletion, the controller retains a resource group or user assigned identity while another `WorkloadIdentity` references it and transfers operator-created provenance to a deterministic surviving reference. If all references are terminating together, the lexicographically first reference keeps its finalizer until its peers disappear, then performs final cleanup. This lets the final referencing `WorkloadIdentity` delete operator-created shared parents safely.
+
+If the operator cannot authorize deletion of an existing user assigned identity or federated identity credential, it may transfer resource-group tracking to a surviving reference but clears operator-created deletion provenance. This prevents a later reconciliation from deleting the resource group and indirectly deleting the unauthorized child.
 
 The operator tracks created/adopted ServiceAccounts using labels:
 
