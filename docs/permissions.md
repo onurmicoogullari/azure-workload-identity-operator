@@ -140,9 +140,11 @@ The operator tracks created/adopted ServiceAccounts using labels:
 
 - `azure.workload.identity/use=true`
 - `workloadidentity.azure.micosolutions.se/managed-by=azure-workload-identity-operator`
-- `workloadidentity.azure.micosolutions.se/workload-identity-uid=<kubernetes-uid>`
+- `workloadidentity.azure.micosolutions.se/workload-identity-uid=<WorkloadIdentity metadata.uid>`
 - `workloadidentity.azure.micosolutions.se/created-by-operator=true|false`
 
-Adopted ServiceAccounts are annotated with the Azure client ID and tenant ID, but are not deleted by the operator.
+The first successful relationship fixes the logical ServiceAccount provenance in `status.serviceAccountProvenance`: `Created` when the ServiceAccount was absent and the operator created it, or `Adopted` when it already existed. This value remains stable when a ServiceAccount is deleted and recreated under the same namespace and name. The labels mirror that persisted decision and are not the normal source of truth. If reconciliation is interrupted after ServiceAccount creation but before provenance is persisted, deletion uses `created-by-operator=true` together with a matching `workload-identity-uid` as a guarded crash-recovery fallback.
+
+Before the relationship is established, the operator adopts only a ServiceAccount without existing Azure client or tenant annotations. After establishment, the configured namespace and name identify the logical ServiceAccount: recreation does not change its provenance, and benign managed-label or annotation differences are repaired as drift. Ownership-label conflicts, such as a different `workload-identity-uid` or an operator-managed ServiceAccount without an owner UID, are rejected. With deletion policy `Delete`, a `Created` ServiceAccount is deleted and an `Adopted` ServiceAccount is retained.
 
 The default manager RBAC grants ServiceAccount `get/list/watch/create/update/patch/delete`. It still does not grant Secret access.

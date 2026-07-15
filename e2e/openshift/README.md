@@ -99,8 +99,10 @@ The test covers the full local integration path:
 5. OpenShift rolls the API server and starts minting service-account tokens with
    the new issuer.
 6. The `WorkloadIdentity` controller creates a user-assigned managed identity,
-   creates a federated identity credential, and creates or adopts the Kubernetes
-   ServiceAccount.
+   creates a federated identity credential, and creates the Kubernetes
+   ServiceAccount with `Created` provenance. The script recreates that
+   ServiceAccount with benign metadata drift and verifies the controller retains
+   its provenance, records the replacement UID, and repairs managed metadata.
 7. The Azure Workload Identity mutating webhook injects the projected token and
    Azure environment into the test Job.
 8. The test Job exchanges the OpenShift service-account token for Azure
@@ -112,9 +114,10 @@ The test covers the full local integration path:
    `WorkloadIdentity` still exists, before the resource enters deletion.
 11. After the `WorkloadIdentity` is deleted, the OIDCIssuer validating webhook
    rejects deletion while OpenShift still references the issuer URL.
-12. The script performs the manual OpenShift service-account issuer handoff, then
-   deletes the `OIDCIssuer` and verifies the operator removes the
-   OIDCIssuer-created Azure resources.
+12. The script verifies WorkloadIdentity deletion removes the operator-created
+   ServiceAccount, performs the manual OpenShift service-account issuer handoff,
+   refreshes the OpenShift OAuth API server token, then deletes the `OIDCIssuer`
+   and verifies the operator removes the OIDCIssuer-created Azure resources.
 
 ## What The Script Tests, Step By Step
 
@@ -133,7 +136,7 @@ Script output is grouped under these numbered steps.
 11. Wait for OpenShift to use the new issuer and mint tokens with that `iss`.
 12. Replace the retiring key Secret only, then verify periodic refresh republishes it.
 13. Create Key Vault.
-14. Create `WorkloadIdentity`.
+14. Create `WorkloadIdentity`, recreate its ServiceAccount, and verify `Created` provenance, replacement UID tracking, and managed metadata repair.
 15. Verify conflict handling for ServiceAccount and federated credential conflicts.
 16. Upload a real Key Vault secret and assign read access.
 17. Build and run the OpenShift Job.
@@ -141,7 +144,8 @@ Script output is grouped under these numbered steps.
 19. Mutate Azure federated credential and verify WorkloadIdentity periodic reconcile repairs it.
 20. Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.
 21. During cleanup, verify deletion is also rejected while OpenShift still references the issuer.
-22. Restore OpenShift issuer, delete resources, and verify Azure cleanup.
+22. Restore the OpenShift issuer, refresh the OAuth API server token, delete
+    resources, and verify Azure and operator-created ServiceAccount cleanup.
 
 ## Cleanup
 
@@ -149,7 +153,7 @@ The script registers a cleanup trap. On exit it deletes resources it created and
 waits for the operator finalizers to finish:
 
 - Test Job
-- `WorkloadIdentity`
+- `WorkloadIdentity` and verification that its operator-created ServiceAccount is deleted
 - `OIDCIssuer`
 - Key Vault Azure resource group
 - WorkloadIdentity Azure resource group
@@ -167,8 +171,10 @@ When `OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER=true`, the script also validates
 the manual handoff guard. It first confirms `OIDCIssuer/default` cannot be
 deleted while `Authentication/cluster.spec.serviceAccountIssuer` still points at
 the published issuer, then disables OIDCIssuer issuer management, restores the
-captured OpenShift issuer value, waits for rollout, and finally deletes the
-`OIDCIssuer`.
+captured OpenShift issuer value, waits for rollout, restarts the OpenShift OAuth
+API server after newly minted tokens return to the captured original issuer,
+verifies the OAuth APIs and related cluster operators are healthy, and finally
+deletes the `OIDCIssuer`.
 
 The OpenShift script runs the operator locally by default, so it exercises the
 local validating webhook endpoint directly for the deletion rejection check.
