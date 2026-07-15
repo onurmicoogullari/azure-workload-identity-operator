@@ -143,9 +143,9 @@ var _ = Describe("Manager", Ordered, func() {
 
 	Context("Manager", func() {
 		It("should run successfully", func() {
-			By("validating that the controller-manager pod is running as expected")
+			By("validating that both controller-manager pods are running as expected")
 			verifyControllerUp := func(g Gomega) {
-				By("getting the name of the controller-manager pod")
+				By("getting the names of the controller-manager pods")
 				cmd := exec.Command("kubectl", "get",
 					"pods", "-l", "control-plane=controller-manager",
 					"-o", "go-template={{ range .items }}"+
@@ -158,20 +158,33 @@ var _ = Describe("Manager", Ordered, func() {
 				podOutput, err := testutil.RunInProject(cmd)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
 				podNames := testutil.NonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
+				g.Expect(podNames).To(HaveLen(2), "expected 2 controller pods running")
 				controllerPodName = podNames[0]
-				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
 
-				By("validating the pod's status")
-				cmd = exec.Command("kubectl", "get",
-					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
-					"-n", namespace,
-				)
-				output, err := testutil.RunInProject(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Incorrect controller-manager pod status")
+				By("validating each pod's status")
+				for _, podName := range podNames {
+					g.Expect(podName).To(ContainSubstring("controller-manager"))
+					cmd = exec.Command("kubectl", "get",
+						"pods", podName, "-o", "jsonpath={.status.phase}",
+						"-n", namespace,
+					)
+					output, err := testutil.RunInProject(cmd)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(output).To(Equal("Running"), "Incorrect controller-manager pod status")
+				}
 			}
 			Eventually(verifyControllerUp).Should(Succeed())
+		})
+
+		It("should elect a controller-manager leader", func() {
+			verifyLeaderElection := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "lease", "052b777d.micosolutions.se",
+					"-n", namespace, "-o", "jsonpath={.spec.holderIdentity}")
+				holderIdentity, err := testutil.RunInProject(cmd)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve the leader election lease")
+				g.Expect(strings.TrimSpace(holderIdentity)).NotTo(BeEmpty(), "Leader election lease has no holder")
+			}
+			Eventually(verifyLeaderElection).Should(Succeed())
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
