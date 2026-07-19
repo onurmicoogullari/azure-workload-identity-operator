@@ -66,6 +66,7 @@ Optional env:
   OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER     default: true
   OIDC_ISSUER_DELETION_POLICY                 default: Delete
   WORKLOAD_IDENTITY_DELETION_POLICY           default: Delete
+  VERIFY_WORKLOAD_IDENTITY_SERVICE_ACCOUNT_RECREATION default: true
   VERIFY_WORKLOAD_IDENTITY_CONFLICTS          default: true
   VERIFY_WORKLOAD_IDENTITY_AZURE_DRIFT        default: true
   IMAGE_NAME                                  default: azwi-crc-test
@@ -143,7 +144,7 @@ script_step_description() {
     11) printf 'Wait for OpenShift to use the new issuer and mint tokens with that iss.' ;;
     12) printf 'Replace the retiring key Secret only, then verify periodic refresh republishes it.' ;;
     13) printf 'Create Key Vault.' ;;
-    14) printf 'Create WorkloadIdentity.' ;;
+    14) printf 'Create WorkloadIdentity and verify ServiceAccount provenance across recreation.' ;;
     15) printf 'Verify conflict handling for ServiceAccount and federated credential conflicts.' ;;
     16) printf 'Upload a real Key Vault secret and assign read access.' ;;
     17) printf 'Build and run the OpenShift Job.' ;;
@@ -151,7 +152,7 @@ script_step_description() {
     19) printf 'Mutate Azure federated credential and verify WorkloadIdentity periodic reconcile repairs it.' ;;
     20) printf 'Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.' ;;
     21) printf 'During cleanup, verify deletion is also rejected while OpenShift still references the issuer.' ;;
-    22) printf 'Restore OpenShift issuer, delete resources, and verify Azure cleanup.' ;;
+    22) printf 'Restore OpenShift issuer, delete resources, and verify Azure and ServiceAccount cleanup.' ;;
     *) printf 'Run OpenShift e2e step.' ;;
   esac
 }
@@ -327,6 +328,7 @@ RETIRING_SIGNING_KEY_SECRET_KEY=${RETIRING_SIGNING_KEY_SECRET_KEY:-service-accou
 OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER=${OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER:-true}
 OIDC_ISSUER_DELETION_POLICY=${OIDC_ISSUER_DELETION_POLICY:-Delete}
 WORKLOAD_IDENTITY_DELETION_POLICY=${WORKLOAD_IDENTITY_DELETION_POLICY:-Delete}
+verify_workload_identity_service_account_recreation_enabled=${VERIFY_WORKLOAD_IDENTITY_SERVICE_ACCOUNT_RECREATION:-true}
 verify_workload_identity_conflicts=${VERIFY_WORKLOAD_IDENTITY_CONFLICTS:-true}
 verify_workload_identity_azure_drift=${VERIFY_WORKLOAD_IDENTITY_AZURE_DRIFT:-true}
 IMAGE_NAME=${IMAGE_NAME:-azwi-crc-test}
@@ -390,7 +392,9 @@ applied_federated_credential_conflict_workload_identity=false
 created_conflict_service_account=false
 oidc_deleted=false
 workload_identity_deleted=false
+expect_workload_identity_service_account_deleted=false
 original_openshift_service_account_issuer=""
+original_openshift_service_account_token_issuer=""
 # The original issuer can be an empty string, so track whether capture actually ran.
 captured_original_openshift_service_account_issuer=false
 created_workload_identity_webhook_namespace=false
@@ -436,6 +440,11 @@ cleanup_workload_identity() {
     fi
     if cleanup_kubernetes_resource "workloadidentity/$WORKLOAD_IDENTITY_NAME" "$NAMESPACE"; then
       workload_identity_deleted=true
+      if [[ $expect_workload_identity_service_account_deleted == "true" && $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" ]]; then
+        log WATCH "Waiting for WorkloadIdentity deletion to remove operator-created ServiceAccount/$SERVICE_ACCOUNT_NAME"
+        wait_for_kubernetes_resource_absent "serviceaccount/$SERVICE_ACCOUNT_NAME" "$NAMESPACE" || return $?
+        log VERIFY "WorkloadIdentity deletion removed operator-created ServiceAccount/$SERVICE_ACCOUNT_NAME"
+      fi
     else
       return 1
     fi
@@ -583,10 +592,11 @@ cleanup_role_assignments() {
 wait_for_kubernetes_resource_absent() {
   local resource=$1
   local namespace=${2:-}
+  local timeout=${3:-$wait_timeout}
   local deadline
   local exists_status
   local -a get_command
-  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+  deadline=$((SECONDS + $(duration_seconds "$timeout")))
   get_command=(kubectl get "$resource")
   if [[ -n $namespace ]]; then
     get_command+=(-n "$namespace")
@@ -1846,14 +1856,94 @@ wait_for_openshift_api_server_rollout() {
   wait_for_openshift_auth_operators "$timeout" || return 1
 }
 
+wait_for_openshift_oauth_apis() {
+  local timeout=$1
+  local deadline
+  deadline=$((SECONDS + $(duration_seconds "$timeout")))
+
+  log WATCH "Waiting for OpenShift OAuth APIs"
+  while ((SECONDS < deadline)); do
+    if oc get --raw /apis/oauth.openshift.io/v1 >/dev/null 2>&1 && \
+      oc get --raw /apis/user.openshift.io/v1 >/dev/null 2>&1; then
+      log VERIFY "OpenShift OAuth APIs are available"
+      return
+    fi
+    sleep_until_deadline "$deadline" 10 || true
+  done
+
+  log ERROR "Timed out waiting for OpenShift OAuth APIs"
+  oc get clusteroperator authentication console openshift-apiserver >&2 || true
+  return 1
+}
+
+refresh_openshift_oauth_apiserver_after_issuer_handoff() {
+  local timeout=$1
+  local expected_issuer
+  local oauth_pod
+  local pod_token
+  local pod_token_issuer
+
+  expected_issuer=$original_openshift_service_account_token_issuer
+  if [[ -z $expected_issuer ]]; then
+    log ERROR "Original OpenShift service-account token issuer was not captured"
+    return 1
+  fi
+
+  wait_for_service_account_token_issuer "$expected_issuer" "$timeout" || return 1
+
+  oauth_pod=$(oc get pod -n openshift-oauth-apiserver -l app=openshift-oauth-apiserver \
+    -o jsonpath='{.items[0].metadata.name}') || return 1
+  if [[ -z $oauth_pod ]]; then
+    log ERROR "OpenShift OAuth API server Pod was not found"
+    return 1
+  fi
+
+  # This is deterministic e2e cleanup, not a test of natural OpenShift recovery.
+  # The Pod can retain a token from the previous issuer until kubelet rotates it,
+  # which can take tens of minutes. New tokens use the restored issuer at this point,
+  # so recreating the Pod gives it a valid token without slowing every e2e run.
+  log UPDATE "Restarting OpenShift OAuth API server to refresh its service-account token after issuer handoff"
+  oc delete pod "$oauth_pod" -n openshift-oauth-apiserver --wait=false >/dev/null || return 1
+  wait_for_kubernetes_resource_absent "pod/$oauth_pod" openshift-oauth-apiserver "$timeout" || return 1
+  wait_for_openshift_oauth_apis "$timeout" || return 1
+
+  pod_token=$(oc exec -n openshift-oauth-apiserver deployment/apiserver -- \
+    cat /var/run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null) || {
+    log ERROR "Failed to read the refreshed OpenShift OAuth API server service-account token"
+    return 1
+  }
+  pod_token_issuer=$(jwt_issuer "$pod_token" || true)
+  if [[ $pod_token_issuer != "$expected_issuer" ]]; then
+    log ERROR "OpenShift OAuth API server token issuer is ${pod_token_issuer:-<empty>}; expected $expected_issuer"
+    return 1
+  fi
+  log VERIFY "OpenShift OAuth API server token uses the restored issuer $expected_issuer"
+
+  wait_for_openshift_auth_operators "$timeout" || return 1
+  wait_for_openshift_condition clusteroperator/console Available=True "$timeout" || return 1
+  wait_for_openshift_condition clusteroperator/console Progressing=False "$timeout" || return 1
+  wait_for_openshift_condition clusteroperator/console Degraded=False "$timeout" || return 1
+}
+
 capture_original_openshift_service_account_issuer() {
+  local token
+
   if [[ $OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER != "true" ]]; then
     return
   fi
 
   original_openshift_service_account_issuer=$(openshift_service_account_issuer)
+  token=$(kubectl create token default -n default --duration=10m) || {
+    log ERROR "Failed to create a service-account token while capturing the original OpenShift issuer"
+    return 1
+  }
+  original_openshift_service_account_token_issuer=$(jwt_issuer "$token") || {
+    log ERROR "Failed to capture the original OpenShift service-account token issuer"
+    return 1
+  }
   captured_original_openshift_service_account_issuer=true
   log CAPTURE "Captured original OpenShift serviceAccountIssuer: ${original_openshift_service_account_issuer:-<empty>}"
+  log CAPTURE "Captured original OpenShift service-account token issuer: $original_openshift_service_account_token_issuer"
 }
 
 verify_oidcissuer_captured_previous_service_account_issuer() {
@@ -2141,6 +2231,7 @@ handoff_openshift_service_account_issuer_before_oidcissuer_delete() {
 
   log WATCH "Waiting for OpenShift API server rollout after manual serviceAccountIssuer handoff"
   wait_for_openshift_api_server_rollout "$original_openshift_service_account_issuer" "$timeout" || return 1
+  refresh_openshift_oauth_apiserver_after_issuer_handoff "$timeout" || return 1
   verify_openshift_service_account_issuer_handed_off || return 1
 }
 
@@ -2409,6 +2500,97 @@ EOF
   wait_for_workloadidentity_ready_false_reason "$federated_credential_conflict_name" FederatedIdentityCredentialConflict "$wait_timeout" || return 1
 }
 
+verify_workload_identity_service_account_recreation() {
+  local initial_service_account_uid
+  local workload_identity_state
+  local workload_identity_uid
+  local status_service_account_uid
+  local provenance
+  local expected_client_id
+  local expected_tenant_id
+  local create_output
+  local deadline
+  local service_account_state
+  local current_service_account_uid
+  local use_label
+  local managed_by_label
+  local owner_uid_label
+  local created_by_label
+  local client_id_annotation
+  local tenant_id_annotation
+
+  if [[ $verify_workload_identity_service_account_recreation_enabled != "true" ]]; then
+    log SKIP "Skipping WorkloadIdentity ServiceAccount recreation verification"
+    return 0
+  fi
+
+  initial_service_account_uid=$(kubectl get serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')
+  workload_identity_state=$(kubectl get workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" -o go-template='{{.metadata.uid}}{{"\t"}}{{.status.serviceAccountUID}}{{"\t"}}{{.status.serviceAccountProvenance}}{{"\t"}}{{.status.clientID}}{{"\t"}}{{.status.tenantID}}')
+  IFS=$'\t' read -r workload_identity_uid status_service_account_uid provenance expected_client_id expected_tenant_id <<<"$workload_identity_state"
+
+  if [[ -z $initial_service_account_uid || $status_service_account_uid != "$initial_service_account_uid" ]]; then
+    log ERROR "WorkloadIdentity/$WORKLOAD_IDENTITY_NAME status.serviceAccountUID does not match ServiceAccount/$SERVICE_ACCOUNT_NAME"
+    return 1
+  fi
+  if [[ $provenance != "Created" ]]; then
+    log ERROR "WorkloadIdentity/$WORKLOAD_IDENTITY_NAME status.serviceAccountProvenance is '${provenance:-<empty>}', want 'Created'"
+    return 1
+  fi
+  if [[ -z $workload_identity_uid || -z $expected_client_id ]]; then
+    log ERROR "WorkloadIdentity/$WORKLOAD_IDENTITY_NAME is missing metadata.uid or status.clientID"
+    return 1
+  fi
+  if [[ $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" ]]; then
+    expect_workload_identity_service_account_deleted=true
+  fi
+  log VERIFY "WorkloadIdentity/$WORKLOAD_IDENTITY_NAME recorded Created provenance for ServiceAccount/$SERVICE_ACCOUNT_NAME"
+
+  log DELETE "Deleting ServiceAccount/$SERVICE_ACCOUNT_NAME to verify same-name recreation"
+  kubectl delete serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" --wait=true --timeout="$wait_timeout" >/dev/null
+
+  log CREATE "Recreating ServiceAccount/$SERVICE_ACCOUNT_NAME without managed metadata"
+  if ! create_output=$(kubectl create serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" 2>&1); then
+    if kubectl get serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+      log WATCH "Operator recreated ServiceAccount/$SERVICE_ACCOUNT_NAME before the e2e script"
+    else
+      log ERROR "Could not recreate ServiceAccount/$SERVICE_ACCOUNT_NAME: $create_output"
+      return 1
+    fi
+  fi
+
+  log UPDATE "Adding benign ServiceAccount metadata drift for reconciliation"
+  kubectl patch serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" --type=merge -p '{"metadata":{"labels":{"workloadidentity.azure.micosolutions.se/created-by-operator":"false"},"annotations":{"azure.workload.identity/client-id":"drifted-client-id"}}}' >/dev/null
+
+  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+  log WATCH "Waiting for WorkloadIdentity reconciliation to preserve provenance and repair ServiceAccount metadata"
+  while ((SECONDS < deadline)); do
+    workload_identity_state=$(kubectl get workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" -o go-template='{{.status.serviceAccountUID}}{{"\t"}}{{.status.serviceAccountProvenance}}' 2>/dev/null || true)
+    IFS=$'\t' read -r status_service_account_uid provenance <<<"$workload_identity_state"
+    service_account_state=$(kubectl get serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" -o go-template='{{.metadata.uid}}{{"\t"}}{{index .metadata.labels "azure.workload.identity/use"}}{{"\t"}}{{index .metadata.labels "workloadidentity.azure.micosolutions.se/managed-by"}}{{"\t"}}{{index .metadata.labels "workloadidentity.azure.micosolutions.se/workload-identity-uid"}}{{"\t"}}{{index .metadata.labels "workloadidentity.azure.micosolutions.se/created-by-operator"}}{{"\t"}}{{index .metadata.annotations "azure.workload.identity/client-id"}}{{"\t"}}{{index .metadata.annotations "azure.workload.identity/tenant-id"}}' 2>/dev/null || true)
+    IFS=$'\t' read -r current_service_account_uid use_label managed_by_label owner_uid_label created_by_label client_id_annotation tenant_id_annotation <<<"$service_account_state"
+
+    if [[ -n $current_service_account_uid &&
+      $current_service_account_uid != "$initial_service_account_uid" &&
+      $status_service_account_uid == "$current_service_account_uid" &&
+      $provenance == "Created" &&
+      $use_label == "true" &&
+      $managed_by_label == "azure-workload-identity-operator" &&
+      $owner_uid_label == "$workload_identity_uid" &&
+      $created_by_label == "true" &&
+      $client_id_annotation == "$expected_client_id" &&
+      ( -z $expected_tenant_id || $tenant_id_annotation == "$expected_tenant_id" ) ]]; then
+      log VERIFY "WorkloadIdentity reconciliation preserved Created provenance, recorded the replacement UID, and repaired ServiceAccount metadata"
+      return 0
+    fi
+    sleep_until_deadline "$deadline" 2 || true
+  done
+
+  log ERROR "Timed out waiting for ServiceAccount recreation and provenance reconciliation"
+  kubectl get workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" -o yaml >&2 || true
+  kubectl get serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" -o yaml >&2 || true
+  return 1
+}
+
 wait_for_job_completion() {
   local name=$1
   local namespace=$2
@@ -2608,6 +2790,7 @@ render "$script_dir/workload-identity.yaml" | kubectl apply -f -
 applied_workload_identity=true
 log WATCH "Waiting for WorkloadIdentity/$WORKLOAD_IDENTITY_NAME to become Ready"
 kubectl wait --for=condition=Ready "workloadidentity/$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" --timeout="$wait_timeout"
+verify_workload_identity_service_account_recreation
 
 begin_step 15
 verify_workload_identity_conflict_reconciliation

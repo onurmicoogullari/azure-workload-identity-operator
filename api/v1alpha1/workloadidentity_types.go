@@ -37,7 +37,8 @@ type WorkloadIdentitySpec struct {
 	// +required
 	ServiceAccount ServiceAccountReference `json:"serviceAccount"`
 
-	// deletionPolicy controls Azure and ServiceAccount deletion when this WorkloadIdentity is deleted.
+	// deletionPolicy controls cleanup when this WorkloadIdentity is deleted. Delete removes Azure resources
+	// according to their recorded ownership and deletes the ServiceAccount only when the operator created it.
 	// +kubebuilder:validation:Enum=Retain;Delete
 	// +kubebuilder:default=Retain
 	// +optional
@@ -86,6 +87,17 @@ type ServiceAccountReference struct {
 	Name string `json:"name"`
 }
 
+// ServiceAccountProvenance records how the ServiceAccount relationship was first established.
+// +kubebuilder:validation:Enum=Created;Adopted
+type ServiceAccountProvenance string
+
+const (
+	// ServiceAccountProvenanceCreated means the ServiceAccount was absent when the relationship was established.
+	ServiceAccountProvenanceCreated ServiceAccountProvenance = "Created"
+	// ServiceAccountProvenanceAdopted means the ServiceAccount already existed when the relationship was established.
+	ServiceAccountProvenanceAdopted ServiceAccountProvenance = "Adopted"
+)
+
 // WorkloadIdentityStatus defines the observed state of WorkloadIdentity.
 type WorkloadIdentityStatus struct {
 	// clientID is the Azure User Assigned Managed Identity client ID.
@@ -111,6 +123,11 @@ type WorkloadIdentityStatus struct {
 	// serviceAccountUID is the UID of the ServiceAccount instance last reconciled by the controller.
 	// +optional
 	ServiceAccountUID string `json:"serviceAccountUID,omitempty"`
+
+	// serviceAccountProvenance records whether the logical ServiceAccount was created or adopted when this
+	// WorkloadIdentity first established the relationship. It remains stable across ServiceAccount recreation.
+	// +optional
+	ServiceAccountProvenance ServiceAccountProvenance `json:"serviceAccountProvenance,omitempty"`
 
 	// observedGeneration is the latest generation reconciled by the controller.
 	// +optional

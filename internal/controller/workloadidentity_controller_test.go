@@ -44,20 +44,25 @@ const (
 	testOtherFederatedCredential  = "other-fic"
 	testClientID                  = "client-id"
 	testTenantID                  = "tenant-id"
+	testExistingLabel             = "existing"
 )
 
 type fakeWorkloadIdentityManager struct {
-	managed workloadidentity.ManagedIdentity
-	err     error
-	ensures int
-	deletes int
-	subject string
-	options workloadidentity.DeleteOptions
+	managed  workloadidentity.ManagedIdentity
+	err      error
+	onEnsure func()
+	ensures  int
+	deletes  int
+	subject  string
+	options  workloadidentity.DeleteOptions
 }
 
 func (f *fakeWorkloadIdentityManager) Ensure(_ context.Context, _ *workloadidentityv1alpha1.WorkloadIdentity, _, subject string) (workloadidentity.ManagedIdentity, error) {
 	f.ensures++
 	f.subject = subject
+	if f.onEnsure != nil {
+		f.onEnsure()
+	}
 	return f.managed, f.err
 }
 
@@ -108,6 +113,28 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(waitForResourceGroup).To(BeFalse())
 			Expect(identitySuccessor).To(BeEmpty())
 			Expect(waitForIdentity).To(BeTrue())
+		})
+	})
+
+	Describe("ServiceAccount provenance", func() {
+		It("does not accept provenance without a recorded ServiceAccount subject", func() {
+			identity := validWorkloadIdentity("test-workload", testWorkloadNamespace)
+			identity.Status.ServiceAccountProvenance = workloadidentityv1alpha1.ServiceAccountProvenanceCreated
+
+			_, recorded := persistedServiceAccountProvenance(identity)
+
+			Expect(recorded).To(BeFalse())
+		})
+
+		It("does not carry provenance across a configured ServiceAccount name change", func() {
+			identity := validWorkloadIdentity("test-workload", testWorkloadNamespace)
+			identity.Status.Subject = "system:serviceaccount:default:test-sa"
+			identity.Status.ServiceAccountProvenance = workloadidentityv1alpha1.ServiceAccountProvenanceCreated
+			identity.Spec.ServiceAccount.Name = testOtherServiceAccountName
+
+			_, recorded := persistedServiceAccountProvenance(identity)
+
+			Expect(recorded).To(BeFalse())
 		})
 	})
 
@@ -167,9 +194,71 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(updated.Status.ClientID).To(Equal(testClientID))
 			Expect(updated.Status.Subject).To(Equal("system:serviceaccount:default:test-sa"))
 			Expect(updated.Status.ServiceAccountUID).To(Equal(string(serviceAccount.UID)))
+			Expect(updated.Status.ServiceAccountProvenance).To(Equal(workloadidentityv1alpha1.ServiceAccountProvenanceCreated))
 			condition := apimeta.FindStatusCondition(updated.Status.Conditions, string(workloadidentityv1alpha1.WorkloadIdentityConditionReady))
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("adopts a ServiceAccount created while Azure resources are ensured", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{
+				managed: workloadidentity.ManagedIdentity{ClientID: testClientID},
+				onEnsure: func() {
+					Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+						Name:      serviceAccountKey.Name,
+						Namespace: serviceAccountKey.Namespace,
+						Labels:    map[string]string{testExistingLabel: trueValue},
+					}})).To(Succeed())
+				},
+			}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			serviceAccount := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, serviceAccount)).To(Succeed())
+			Expect(serviceAccount.Labels[testExistingLabel]).To(Equal(trueValue))
+			Expect(serviceAccount.Labels[serviceAccountCreatedBy]).To(Equal("false"))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			Expect(updated.Status.ServiceAccountProvenance).To(Equal(workloadidentityv1alpha1.ServiceAccountProvenanceAdopted))
+		})
+
+		It("creates a ServiceAccount when the inspected account disappears while Azure resources are ensured", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			inspectedServiceAccount := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Labels:    map[string]string{testExistingLabel: trueValue},
+			}}
+			Expect(k8sClient.Create(ctx, inspectedServiceAccount)).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{
+				managed: workloadidentity.ManagedIdentity{ClientID: testClientID},
+				onEnsure: func() {
+					Expect(k8sClient.Delete(ctx, inspectedServiceAccount)).To(Succeed())
+				},
+			}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			serviceAccount := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, serviceAccount)).To(Succeed())
+			Expect(serviceAccount.UID).NotTo(Equal(inspectedServiceAccount.UID))
+			Expect(serviceAccount.Labels[testExistingLabel]).To(BeEmpty())
+			Expect(serviceAccount.Labels[serviceAccountCreatedBy]).To(Equal(trueValue))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			Expect(updated.Status.ServiceAccountProvenance).To(Equal(workloadidentityv1alpha1.ServiceAccountProvenanceCreated))
 		})
 
 		It("uses a custom workload identity refresh interval after successful reconciliation", func() {
@@ -221,7 +310,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(serviceAccountAfter.ResourceVersion).To(Equal(serviceAccountBefore.ResourceVersion))
 		})
 
-		It("rejects a manually recreated ServiceAccount after successful reconciliation", func() {
+		It("adopts a manually recreated ServiceAccount after successful reconciliation", func() {
 			createReadyOIDCIssuer(ctx, issuerKey.Name)
 			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
@@ -245,16 +334,66 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			}})).To(Succeed())
 
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
-			Expect(err).To(HaveOccurred())
-			Expect(isServiceAccountConflict(err)).To(BeTrue())
-			Expect(manager.ensures).To(Equal(1))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(manager.ensures).To(Equal(2))
+
+			replacement := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, replacement)).To(Succeed())
+			Expect(replacement.UID).NotTo(Equal(originalUID))
+			Expect(replacement.Labels[serviceAccountUID]).To(Equal(string(identity.UID)))
+			Expect(replacement.Labels[serviceAccountCreatedBy]).To(Equal(trueValue))
+			Expect(replacement.Annotations[serviceAccountClientID]).To(Equal(testClientID))
 
 			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
 			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
-			Expect(updated.Status.ServiceAccountUID).To(Equal(string(originalUID)))
+			Expect(updated.Status.ServiceAccountUID).To(Equal(string(replacement.UID)))
+			Expect(updated.Status.ServiceAccountProvenance).To(Equal(workloadidentityv1alpha1.ServiceAccountProvenanceCreated))
 			condition := apimeta.FindStatusCondition(updated.Status.Conditions, string(workloadidentityv1alpha1.WorkloadIdentityConditionReady))
 			Expect(condition).NotTo(BeNil())
-			Expect(condition.Reason).To(Equal("ServiceAccountConflict"))
+			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("repairs Azure annotation drift on a recreated ServiceAccount", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			originalServiceAccount := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, originalServiceAccount)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, originalServiceAccount)).To(Succeed())
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{})
+				return apierrors.IsNotFound(err)
+			}).Should(BeTrue())
+			Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Annotations: map[string]string{
+					serviceAccountClientID: "other-client-id",
+				},
+			}})).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(manager.ensures).To(Equal(2))
+
+			replacement := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, replacement)).To(Succeed())
+			Expect(replacement.Annotations[serviceAccountClientID]).To(Equal(testClientID))
+			Expect(replacement.Labels[serviceAccountCreatedBy]).To(Equal(trueValue))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			Expect(updated.Status.ServiceAccountUID).To(Equal(string(replacement.UID)))
+			Expect(updated.Status.ServiceAccountProvenance).To(Equal(workloadidentityv1alpha1.ServiceAccountProvenanceCreated))
+			condition := apimeta.FindStatusCondition(updated.Status.Conditions, string(workloadidentityv1alpha1.WorkloadIdentityConditionReady))
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 		})
 
 		It("recreates a missing operator ServiceAccount and records its new UID", func() {
@@ -284,16 +423,27 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
 			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
 			Expect(updated.Status.ServiceAccountUID).To(Equal(string(recreatedServiceAccount.UID)))
+			Expect(updated.Status.ServiceAccountProvenance).To(Equal(workloadidentityv1alpha1.ServiceAccountProvenanceCreated))
 		})
 
-		It("adopts an existing ServiceAccount without marking it as created", func() {
+		It("does not restore created provenance without a matching WorkloadIdentity owner", func() {
 			createReadyOIDCIssuer(ctx, issuerKey.Name)
 			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+
+			persisted := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, persisted)).To(Succeed())
+			original := persisted.DeepCopy()
+			persisted.Status.Subject = serviceAccountSubject(persisted)
+			persisted.Status.ServiceAccountUID = "previous-service-account-uid"
+			Expect(k8sClient.Status().Patch(ctx, persisted, client.MergeFrom(original))).To(Succeed())
+
 			Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 				Name:      serviceAccountKey.Name,
 				Namespace: serviceAccountKey.Namespace,
-				Labels:    map[string]string{"existing": "true"},
+				Labels: map[string]string{
+					serviceAccountCreatedBy: trueValue,
+				},
 			}})).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
@@ -303,10 +453,74 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 
 			serviceAccount := &corev1.ServiceAccount{}
 			Expect(k8sClient.Get(ctx, serviceAccountKey, serviceAccount)).To(Succeed())
-			Expect(serviceAccount.Labels["existing"]).To(Equal(trueValue))
+			Expect(serviceAccount.Labels[serviceAccountCreatedBy]).To(Equal("false"))
+			Expect(serviceAccount.Labels[serviceAccountUID]).To(Equal(string(identity.UID)))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			Expect(updated.Status.ServiceAccountProvenance).To(Equal(workloadidentityv1alpha1.ServiceAccountProvenanceAdopted))
+		})
+
+		It("adopts an existing ServiceAccount without marking it as created", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Labels:    map[string]string{testExistingLabel: trueValue},
+			}})).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			serviceAccount := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, serviceAccount)).To(Succeed())
+			Expect(serviceAccount.Labels[testExistingLabel]).To(Equal(trueValue))
 			Expect(serviceAccount.Labels[serviceAccountUseLabel]).To(Equal(trueValue))
 			Expect(serviceAccount.Labels[serviceAccountCreatedBy]).To(Equal("false"))
 			Expect(serviceAccount.Annotations[serviceAccountClientID]).To(Equal(testClientID))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			Expect(updated.Status.ServiceAccountProvenance).To(Equal(workloadidentityv1alpha1.ServiceAccountProvenanceAdopted))
+		})
+
+		It("preserves adopted provenance when recreating a missing ServiceAccount", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+			}})).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			adopted := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, adopted)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, adopted)).To(Succeed())
+			Eventually(func() bool {
+				err := k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{})
+				return apierrors.IsNotFound(err)
+			}).Should(BeTrue())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			recreated := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, recreated)).To(Succeed())
+			Expect(recreated.UID).NotTo(Equal(adopted.UID))
+			Expect(recreated.Labels[serviceAccountCreatedBy]).To(Equal("false"))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			Expect(updated.Status.ServiceAccountProvenance).To(Equal(workloadidentityv1alpha1.ServiceAccountProvenanceAdopted))
 		})
 
 		It("marks not ready when the ServiceAccount is owned by another WorkloadIdentity", func() {
@@ -478,17 +692,22 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(requests).To(BeEmpty())
 		})
 
-		It("deletes Azure resources and created ServiceAccount when deletion policy is Delete", func() {
+		It("deletes Azure resources and created ServiceAccount based on persisted provenance", func() {
 			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
 			identity.Finalizers = []string{workloadIdentityFinalizer}
 			identity.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			persisted := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, persisted)).To(Succeed())
+			original := persisted.DeepCopy()
+			persisted.Status.Subject = serviceAccountSubject(persisted)
+			persisted.Status.ServiceAccountProvenance = workloadidentityv1alpha1.ServiceAccountProvenanceCreated
+			Expect(k8sClient.Status().Patch(ctx, persisted, client.MergeFrom(original))).To(Succeed())
 			serviceAccount := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 				Name:      serviceAccountKey.Name,
 				Namespace: serviceAccountKey.Namespace,
 				Labels: map[string]string{
-					serviceAccountUID:       string(identity.UID),
-					serviceAccountCreatedBy: trueValue,
+					serviceAccountUID: "stale-workload-identity-uid",
 				},
 			}}
 			Expect(k8sClient.Create(ctx, serviceAccount)).To(Succeed())
@@ -505,7 +724,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 
-		It("keeps an adopted ServiceAccount when deletion policy is Delete", func() {
+		It("deletes a created ServiceAccount from guarded labels when provenance was not persisted", func() {
 			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
 			identity.Finalizers = []string{workloadIdentityFinalizer}
 			identity.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
@@ -515,7 +734,62 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 				Namespace: serviceAccountKey.Namespace,
 				Labels: map[string]string{
 					serviceAccountUID:       string(identity.UID),
-					serviceAccountCreatedBy: "false",
+					serviceAccountCreatedBy: trueValue,
+				},
+			}}
+			Expect(k8sClient.Create(ctx, serviceAccount)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
+
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: &fakeWorkloadIdentityManager{}}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			deletedServiceAccount := &corev1.ServiceAccount{}
+			err = k8sClient.Get(ctx, serviceAccountKey, deletedServiceAccount)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("retains a ServiceAccount when only the created label matches and provenance was not persisted", func() {
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			identity.Finalizers = []string{workloadIdentityFinalizer}
+			identity.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			serviceAccount := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Labels: map[string]string{
+					serviceAccountUID:       "different-workload-identity-uid",
+					serviceAccountCreatedBy: trueValue,
+				},
+			}}
+			Expect(k8sClient.Create(ctx, serviceAccount)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
+
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: &fakeWorkloadIdentityManager{}}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			retainedServiceAccount := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, retainedServiceAccount)).To(Succeed())
+		})
+
+		It("keeps an adopted ServiceAccount when deletion policy is Delete", func() {
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			identity.Finalizers = []string{workloadIdentityFinalizer}
+			identity.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			persisted := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, persisted)).To(Succeed())
+			original := persisted.DeepCopy()
+			persisted.Status.Subject = serviceAccountSubject(persisted)
+			persisted.Status.ServiceAccountProvenance = workloadidentityv1alpha1.ServiceAccountProvenanceAdopted
+			Expect(k8sClient.Status().Patch(ctx, persisted, client.MergeFrom(original))).To(Succeed())
+			serviceAccount := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Labels: map[string]string{
+					serviceAccountUID:       string(identity.UID),
+					serviceAccountCreatedBy: trueValue,
 				},
 			}}
 			Expect(k8sClient.Create(ctx, serviceAccount)).To(Succeed())

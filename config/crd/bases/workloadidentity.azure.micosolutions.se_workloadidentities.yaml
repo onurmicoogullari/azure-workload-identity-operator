@@ -92,8 +92,9 @@ spec:
                 type: object
               deletionPolicy:
                 default: Retain
-                description: deletionPolicy controls Azure and ServiceAccount deletion
-                  when this WorkloadIdentity is deleted.
+                description: |-
+                  deletionPolicy controls cleanup when this WorkloadIdentity is deleted. Delete removes Azure resources
+                  according to their recorded ownership and deletes the ServiceAccount only when the operator created it.
                 enum:
                 - Retain
                 - Delete
@@ -222,6 +223,14 @@ spec:
               principalID:
                 description: principalID is the Azure User Assigned Managed Identity
                   principal ID.
+                type: string
+              serviceAccountProvenance:
+                description: |-
+                  serviceAccountProvenance records whether the logical ServiceAccount was created or adopted when this
+                  WorkloadIdentity first established the relationship. It remains stable across ServiceAccount recreation.
+                enum:
+                - Created
+                - Adopted
                 type: string
               serviceAccountUID:
                 description: serviceAccountUID is the UID of the ServiceAccount instance

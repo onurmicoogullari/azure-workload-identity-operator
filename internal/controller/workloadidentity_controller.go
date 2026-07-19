@@ -114,7 +114,8 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, r.setWorkloadIdentityNotReady(ctx, identity, "ManagerNotConfigured", "Azure workload identity manager is not configured")
 	}
 
-	if err := r.validateExistingServiceAccount(ctx, identity); err != nil {
+	serviceAccountState, err := r.inspectServiceAccount(ctx, identity)
+	if err != nil {
 		log.Error(err, "Failed to validate existing ServiceAccount")
 		reason := "ServiceAccountReadFailed"
 		if isServiceAccountConflict(err) {
@@ -142,7 +143,7 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	serviceAccount, err := r.ensureServiceAccount(ctx, identity, managed)
+	serviceAccount, serviceAccountProvenance, err := r.ensureServiceAccount(ctx, identity, managed, serviceAccountState)
 	if err != nil {
 		log.Error(err, "Failed to ensure ServiceAccount")
 		reason := "ServiceAccountEnsureFailed"
@@ -156,7 +157,7 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 
-	if err := r.setWorkloadIdentityReady(ctx, identity, issuer.Status.IssuerURL, subject, string(serviceAccount.UID), managed); err != nil {
+	if err := r.setWorkloadIdentityReady(ctx, identity, issuer.Status.IssuerURL, subject, string(serviceAccount.UID), serviceAccountProvenance, managed); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -305,62 +306,81 @@ func deletionSuccessor(current deletionReference, references []deletionReference
 	return coordinator.uid, false
 }
 
-func (r *WorkloadIdentityReconciler) ensureServiceAccount(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, managed workloadidentity.ManagedIdentity) (*corev1.ServiceAccount, error) {
+type serviceAccountReconcileState struct {
+	Provenance  azworkloadidentityv1alpha1.ServiceAccountProvenance
+	Established bool
+}
+
+func (r *WorkloadIdentityReconciler) ensureServiceAccount(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, managed workloadidentity.ManagedIdentity, state serviceAccountReconcileState) (*corev1.ServiceAccount, azworkloadidentityv1alpha1.ServiceAccountProvenance, error) {
 	key := serviceAccountKey(identity)
 	serviceAccount := &corev1.ServiceAccount{}
+	provenance := state.Provenance
 	if err := r.Get(ctx, key, serviceAccount); apierrors.IsNotFound(err) {
+		if !state.Established {
+			provenance = azworkloadidentityv1alpha1.ServiceAccountProvenanceCreated
+		}
 		serviceAccount = &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
-		serviceAccount.Labels = desiredServiceAccountLabels(identity, true)
+		serviceAccount.Labels = desiredServiceAccountLabels(identity, provenance == azworkloadidentityv1alpha1.ServiceAccountProvenanceCreated)
 		serviceAccount.Annotations = desiredServiceAccountAnnotations(managed)
 		if createErr := r.Create(ctx, serviceAccount); createErr != nil {
-			return nil, createErr
+			return nil, "", createErr
 		}
-		return serviceAccount, nil
+		return serviceAccount, provenance, nil
 	} else if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	if err := validateServiceAccountOwnership(identity, serviceAccount); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if err := validateServiceAccountAnnotations(identity, serviceAccount, managed); err != nil {
-		return nil, err
+	if !state.Established {
+		if err := validateUnownedServiceAccountAnnotations(serviceAccount); err != nil {
+			return nil, "", err
+		}
+		provenance = azworkloadidentityv1alpha1.ServiceAccountProvenanceAdopted
 	}
 
 	original := serviceAccount.DeepCopy()
-	created := serviceAccount.Labels[serviceAccountCreatedBy] == trueValue && serviceAccount.Labels[serviceAccountUID] == string(identity.UID)
+	created := provenance == azworkloadidentityv1alpha1.ServiceAccountProvenanceCreated
 	desiredLabels := mergeStringMap(serviceAccount.Labels, desiredServiceAccountLabels(identity, created))
 	desiredAnnotations := mergeStringMap(serviceAccount.Annotations, desiredServiceAccountAnnotations(managed))
 	if maps.Equal(serviceAccount.Labels, desiredLabels) && maps.Equal(serviceAccount.Annotations, desiredAnnotations) {
-		return serviceAccount, nil
+		return serviceAccount, provenance, nil
 	}
 	serviceAccount.Labels = desiredLabels
 	serviceAccount.Annotations = desiredAnnotations
 	if err := r.Patch(ctx, serviceAccount, client.MergeFrom(original)); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return serviceAccount, nil
+	return serviceAccount, provenance, nil
 }
 
-func (r *WorkloadIdentityReconciler) validateExistingServiceAccount(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) error {
+func (r *WorkloadIdentityReconciler) inspectServiceAccount(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) (serviceAccountReconcileState, error) {
 	serviceAccount := &corev1.ServiceAccount{}
 	if err := r.Get(ctx, serviceAccountKey(identity), serviceAccount); apierrors.IsNotFound(err) {
-		return nil
+		if provenance, ok := persistedServiceAccountProvenance(identity); ok {
+			return serviceAccountReconcileState{Provenance: provenance, Established: true}, nil
+		}
+		if serviceAccountStatusMatchesConfiguredName(identity) && identity.Status.ServiceAccountUID != "" {
+			return serviceAccountReconcileState{Provenance: azworkloadidentityv1alpha1.ServiceAccountProvenanceAdopted, Established: true}, nil
+		}
+		return serviceAccountReconcileState{}, nil
 	} else if err != nil {
-		return err
+		return serviceAccountReconcileState{}, err
 	}
 	if err := validateServiceAccountOwnership(identity, serviceAccount); err != nil {
-		return err
+		return serviceAccountReconcileState{}, err
 	}
-	if identity.Status.ServiceAccountUID != "" && identity.Status.ServiceAccountUID != string(serviceAccount.UID) {
-		return newServiceAccountConflict(
-			"ServiceAccount %q was replaced after reconciliation; expected UID %q, got %q",
-			client.ObjectKeyFromObject(serviceAccount).String(),
-			identity.Status.ServiceAccountUID,
-			serviceAccount.UID,
-		)
+	if provenance, ok := persistedServiceAccountProvenance(identity); ok {
+		return serviceAccountReconcileState{Provenance: provenance, Established: true}, nil
 	}
-	return validateUnownedServiceAccountAnnotations(identity, serviceAccount)
+	if (serviceAccountStatusMatchesConfiguredName(identity) && identity.Status.ServiceAccountUID != "") || serviceAccountOwnedBy(identity, serviceAccount) {
+		return serviceAccountReconcileState{Provenance: serviceAccountProvenanceFromLabels(identity, serviceAccount), Established: true}, nil
+	}
+	if err := validateUnownedServiceAccountAnnotations(serviceAccount); err != nil {
+		return serviceAccountReconcileState{}, err
+	}
+	return serviceAccountReconcileState{}, nil
 }
 
 type serviceAccountConflictError struct {
@@ -397,33 +417,7 @@ func validateServiceAccountOwnership(identity *azworkloadidentityv1alpha1.Worklo
 	return nil
 }
 
-func validateServiceAccountAnnotations(identity *azworkloadidentityv1alpha1.WorkloadIdentity, serviceAccount *corev1.ServiceAccount, managed workloadidentity.ManagedIdentity) error {
-	if serviceAccountOwnedBy(identity, serviceAccount) {
-		return nil
-	}
-
-	if existing := serviceAccount.Annotations[serviceAccountClientID]; existing != "" && existing != managed.ClientID {
-		return newServiceAccountConflict(
-			"ServiceAccount %q is already annotated for Azure client ID %q",
-			client.ObjectKeyFromObject(serviceAccount).String(),
-			existing,
-		)
-	}
-	if existing := serviceAccount.Annotations[serviceAccountTenantID]; existing != "" && existing != managed.TenantID {
-		return newServiceAccountConflict(
-			"ServiceAccount %q is already annotated for Azure tenant ID %q",
-			client.ObjectKeyFromObject(serviceAccount).String(),
-			existing,
-		)
-	}
-	return nil
-}
-
-func validateUnownedServiceAccountAnnotations(identity *azworkloadidentityv1alpha1.WorkloadIdentity, serviceAccount *corev1.ServiceAccount) error {
-	if serviceAccountOwnedBy(identity, serviceAccount) {
-		return nil
-	}
-
+func validateUnownedServiceAccountAnnotations(serviceAccount *corev1.ServiceAccount) error {
 	if existing := serviceAccount.Annotations[serviceAccountClientID]; existing != "" {
 		return newServiceAccountConflict(
 			"ServiceAccount %q is already annotated for Azure client ID %q",
@@ -445,6 +439,29 @@ func serviceAccountOwnedBy(identity *azworkloadidentityv1alpha1.WorkloadIdentity
 	return serviceAccount.Labels[serviceAccountUID] == string(identity.UID)
 }
 
+func persistedServiceAccountProvenance(identity *azworkloadidentityv1alpha1.WorkloadIdentity) (azworkloadidentityv1alpha1.ServiceAccountProvenance, bool) {
+	if !serviceAccountStatusMatchesConfiguredName(identity) {
+		return "", false
+	}
+	switch identity.Status.ServiceAccountProvenance {
+	case azworkloadidentityv1alpha1.ServiceAccountProvenanceCreated, azworkloadidentityv1alpha1.ServiceAccountProvenanceAdopted:
+		return identity.Status.ServiceAccountProvenance, true
+	default:
+		return "", false
+	}
+}
+
+func serviceAccountStatusMatchesConfiguredName(identity *azworkloadidentityv1alpha1.WorkloadIdentity) bool {
+	return identity.Status.Subject != "" && identity.Status.Subject == serviceAccountSubject(identity)
+}
+
+func serviceAccountProvenanceFromLabels(identity *azworkloadidentityv1alpha1.WorkloadIdentity, serviceAccount *corev1.ServiceAccount) azworkloadidentityv1alpha1.ServiceAccountProvenance {
+	if serviceAccount.Labels[serviceAccountCreatedBy] == trueValue && serviceAccountOwnedBy(identity, serviceAccount) {
+		return azworkloadidentityv1alpha1.ServiceAccountProvenanceCreated
+	}
+	return azworkloadidentityv1alpha1.ServiceAccountProvenanceAdopted
+}
+
 func (r *WorkloadIdentityReconciler) deleteServiceAccountIfOwned(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) error {
 	serviceAccount := &corev1.ServiceAccount{}
 	if err := r.Get(ctx, serviceAccountKey(identity), serviceAccount); apierrors.IsNotFound(err) {
@@ -453,13 +470,17 @@ func (r *WorkloadIdentityReconciler) deleteServiceAccountIfOwned(ctx context.Con
 		return err
 	}
 
-	if serviceAccount.Labels[serviceAccountCreatedBy] != trueValue || serviceAccount.Labels[serviceAccountUID] != string(identity.UID) {
+	provenance, recorded := persistedServiceAccountProvenance(identity)
+	if recorded && provenance != azworkloadidentityv1alpha1.ServiceAccountProvenanceCreated {
+		return nil
+	}
+	if !recorded && (serviceAccount.Labels[serviceAccountCreatedBy] != trueValue || serviceAccount.Labels[serviceAccountUID] != string(identity.UID)) {
 		return nil
 	}
 	return r.Delete(ctx, serviceAccount)
 }
 
-func (r *WorkloadIdentityReconciler) setWorkloadIdentityReady(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, issuerURL, subject, serviceAccountUID string, managed workloadidentity.ManagedIdentity) error {
+func (r *WorkloadIdentityReconciler) setWorkloadIdentityReady(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, issuerURL, subject, serviceAccountUID string, serviceAccountProvenance azworkloadidentityv1alpha1.ServiceAccountProvenance, managed workloadidentity.ManagedIdentity) error {
 	return r.patchWorkloadIdentityStatus(ctx, identity, func(status *azworkloadidentityv1alpha1.WorkloadIdentityStatus) {
 		status.ClientID = managed.ClientID
 		status.PrincipalID = managed.PrincipalID
@@ -467,6 +488,7 @@ func (r *WorkloadIdentityReconciler) setWorkloadIdentityReady(ctx context.Contex
 		status.IssuerURL = issuerURL
 		status.Subject = subject
 		status.ServiceAccountUID = serviceAccountUID
+		status.ServiceAccountProvenance = serviceAccountProvenance
 		status.AzureResources = managed.AzureResources
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
