@@ -62,10 +62,6 @@ func (*countingWorkloadIdentityManager) Delete(context.Context, *workloadidentit
 	return nil
 }
 
-func (*countingWorkloadIdentityManager) DeleteWithOptions(context.Context, *workloadidentityv1alpha1.WorkloadIdentity, workloadidentity.DeleteOptions) error {
-	return nil
-}
-
 var _ = Describe("Controller manager event settling", Ordered, func() {
 	It("keeps periodic heartbeats from causing self or cross-controller hot loops", func() {
 		const refreshInterval = time.Hour

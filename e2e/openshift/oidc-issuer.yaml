@@ -4,9 +4,6 @@ metadata:
   name: default
 spec:
   azure:
-    subscriptionID: ${AZURE_SUBSCRIPTION_ID}
-    location: ${AZURE_LOCATION}
-    resourceGroupName: ${AZURE_RESOURCE_GROUP_NAME}
     storageAccountName: ${AZURE_STORAGE_ACCOUNT_NAME}
     blobContainerName: ${AZURE_BLOB_CONTAINER_NAME}
   signingKey:

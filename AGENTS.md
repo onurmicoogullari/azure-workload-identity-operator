@@ -144,12 +144,11 @@ Operational notes from a successful CRC run:
   groups created by the default configuration:
 
   ```bash
-  az group exists -n rg-azwi-crc-storage-test
-  az group exists -n rg-azwi-crc-wi-test
+  az group exists -n rg-azwi-crc-platform-test
   az group exists -n rg-azwi-crc-kv-test
   ```
 
-  All three commands should return `false`.
+  Both commands should return `false`.
 
 ## After Making Changes
 
@@ -254,7 +253,7 @@ make manifests generate
 # 2. Build & deploy
 export IMG=<registry>/<project>:tag
 make docker-build docker-push IMG=$IMG  # Or: kind load docker-image $IMG --name <cluster>
-make deploy IMG=$IMG
+make deploy IMG=$IMG DEPLOY_CONFIG=config/<installation-overlay>
 
 # 3. Test
 kubectl apply -k config/samples/

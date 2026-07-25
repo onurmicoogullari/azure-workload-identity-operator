@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"maps"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -31,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -68,6 +68,7 @@ type WorkloadIdentityReconciler struct {
 	client.Client
 	Scheme          *runtime.Scheme
 	Manager         workloadidentity.Manager
+	Recorder        events.EventRecorder
 	RefreshInterval time.Duration
 }
 
@@ -76,6 +77,7 @@ type WorkloadIdentityReconciler struct {
 // +kubebuilder:rbac:groups=workloadidentity.azure.micosolutions.se,resources=workloadidentities/finalizers,verbs=update
 // +kubebuilder:rbac:groups=workloadidentity.azure.micosolutions.se,resources=oidcissuers,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -195,35 +197,14 @@ func (r *WorkloadIdentityReconciler) reconcileWorkloadIdentityDelete(ctx context
 		if r.Manager == nil {
 			return ctrl.Result{}, fmt.Errorf("azure workload identity manager is not configured")
 		}
-		deleteOptions, waitForPeers, err := r.workloadIdentityDeleteOptions(ctx, identity)
+		err := r.Manager.Delete(ctx, identity)
 		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if waitForPeers {
-			logf.FromContext(ctx).Info(
-				"Waiting for terminating WorkloadIdentities that share Azure parents",
-				"resourceGroup", identity.Spec.Azure.ResourceGroupName,
-				"userAssignedIdentity", identity.Spec.Azure.UserAssignedIdentityName,
-				"preserveResourceGroup", deleteOptions.PreserveResourceGroup,
-				"resourceGroupSuccessorUID", deleteOptions.ResourceGroupSuccessorUID,
-				"preserveUserAssignedIdentity", deleteOptions.PreserveUserAssignedIdentity,
-				"userAssignedIdentitySuccessorUID", deleteOptions.UserAssignedIdentitySuccessorUID,
-			)
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-		}
-		logf.FromContext(ctx).Info(
-			"Deleting WorkloadIdentity Azure resources",
-			"preserveResourceGroup", deleteOptions.PreserveResourceGroup,
-			"resourceGroupSuccessorUID", deleteOptions.ResourceGroupSuccessorUID,
-			"preserveUserAssignedIdentity", deleteOptions.PreserveUserAssignedIdentity,
-			"userAssignedIdentitySuccessorUID", deleteOptions.UserAssignedIdentitySuccessorUID,
-		)
-		if dependencyAwareManager, ok := r.Manager.(workloadidentity.DependencyAwareManager); ok {
-			err = dependencyAwareManager.DeleteWithOptions(ctx, identity, deleteOptions)
-		} else {
-			err = r.Manager.Delete(ctx, identity)
-		}
-		if err != nil {
+			if reason, ok := workloadidentity.ConflictReason(err); ok &&
+				reason == workloadidentity.ReasonRecoveryRequired {
+				r.emitRecoveryRequiredDeletionWarning(identity, err)
+				controllerutil.RemoveFinalizer(identity, workloadIdentityFinalizer)
+				return ctrl.Result{}, r.Update(ctx, identity)
+			}
 			return ctrl.Result{}, err
 		}
 		if err := r.deleteServiceAccountIfOwned(ctx, identity); err != nil {
@@ -235,75 +216,28 @@ func (r *WorkloadIdentityReconciler) reconcileWorkloadIdentityDelete(ctx context
 	return ctrl.Result{}, r.Update(ctx, identity)
 }
 
-type deletionReference struct {
-	key      string
-	uid      string
-	deleting bool
-}
-
-func (r *WorkloadIdentityReconciler) workloadIdentityDeleteOptions(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) (workloadidentity.DeleteOptions, bool, error) {
-	identities := &azworkloadidentityv1alpha1.WorkloadIdentityList{}
-	if err := r.List(ctx, identities); err != nil {
-		return workloadidentity.DeleteOptions{}, false, fmt.Errorf("list WorkloadIdentities before Azure deletion: %w", err)
+func (r *WorkloadIdentityReconciler) emitRecoveryRequiredDeletionWarning(
+	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
+	err error,
+) {
+	if r.Recorder != nil {
+		r.Recorder.Eventf(
+			identity,
+			nil,
+			corev1.EventTypeWarning,
+			workloadidentity.ReasonRecoveryRequired,
+			"PreserveAzureResources",
+			"Preserved Azure resources because they belong to an earlier instance of this WorkloadIdentity",
+		)
 	}
-
-	resourceGroupReferences := make([]deletionReference, 0, len(identities.Items))
-	userAssignedIdentityReferences := make([]deletionReference, 0, len(identities.Items))
-	for i := range identities.Items {
-		other := &identities.Items[i]
-		if other.UID == identity.UID {
-			continue
-		}
-		if !strings.EqualFold(other.Spec.Azure.SubscriptionID, identity.Spec.Azure.SubscriptionID) ||
-			!strings.EqualFold(other.Spec.Azure.ResourceGroupName, identity.Spec.Azure.ResourceGroupName) {
-			continue
-		}
-		reference := deletionReference{key: other.Namespace + "/" + other.Name, uid: string(other.UID), deleting: !other.DeletionTimestamp.IsZero()}
-		resourceGroupReferences = append(resourceGroupReferences, reference)
-		if strings.EqualFold(other.Spec.Azure.UserAssignedIdentityName, identity.Spec.Azure.UserAssignedIdentityName) {
-			userAssignedIdentityReferences = append(userAssignedIdentityReferences, reference)
-		}
-	}
-
-	current := deletionReference{key: identity.Namespace + "/" + identity.Name, uid: string(identity.UID), deleting: true}
-	resourceGroupSuccessor, waitForResourceGroup := deletionSuccessor(current, resourceGroupReferences)
-	userAssignedIdentitySuccessor, waitForUserAssignedIdentity := deletionSuccessor(current, userAssignedIdentityReferences)
-	options := workloadidentity.DeleteOptions{
-		PreserveResourceGroup:            len(resourceGroupReferences) > 0,
-		PreserveUserAssignedIdentity:     len(userAssignedIdentityReferences) > 0,
-		ResourceGroupSuccessorUID:        resourceGroupSuccessor,
-		UserAssignedIdentitySuccessorUID: userAssignedIdentitySuccessor,
-	}
-	return options, waitForResourceGroup || waitForUserAssignedIdentity, nil
-}
-
-func deletionSuccessor(current deletionReference, references []deletionReference) (string, bool) {
-	if len(references) == 0 {
-		return "", false
-	}
-	successor := deletionReference{}
-	for _, reference := range references {
-		if reference.deleting {
-			continue
-		}
-		if successor.key == "" || reference.key < successor.key {
-			successor = reference
-		}
-	}
-	if successor.key != "" {
-		return successor.uid, false
-	}
-
-	coordinator := current
-	for _, reference := range references {
-		if reference.key < coordinator.key {
-			coordinator = reference
-		}
-	}
-	if coordinator.uid == current.uid {
-		return "", true
-	}
-	return coordinator.uid, false
+	logf.Log.WithName("workloadidentity-controller").Error(
+		err,
+		"Preserved Azure resources while deleting recreated WorkloadIdentity",
+		"namespace",
+		identity.Namespace,
+		"name",
+		identity.Name,
+	)
 }
 
 type serviceAccountReconcileState struct {
@@ -362,7 +296,10 @@ func (r *WorkloadIdentityReconciler) inspectServiceAccount(ctx context.Context, 
 			return serviceAccountReconcileState{Provenance: provenance, Established: true}, nil
 		}
 		if serviceAccountStatusMatchesConfiguredName(identity) && identity.Status.ServiceAccountUID != "" {
-			return serviceAccountReconcileState{Provenance: azworkloadidentityv1alpha1.ServiceAccountProvenanceAdopted, Established: true}, nil
+			return serviceAccountReconcileState{
+				Provenance:  azworkloadidentityv1alpha1.ServiceAccountProvenanceAdopted,
+				Established: true,
+			}, nil
 		}
 		return serviceAccountReconcileState{}, nil
 	} else if err != nil {
@@ -374,8 +311,12 @@ func (r *WorkloadIdentityReconciler) inspectServiceAccount(ctx context.Context, 
 	if provenance, ok := persistedServiceAccountProvenance(identity); ok {
 		return serviceAccountReconcileState{Provenance: provenance, Established: true}, nil
 	}
-	if (serviceAccountStatusMatchesConfiguredName(identity) && identity.Status.ServiceAccountUID != "") || serviceAccountOwnedBy(identity, serviceAccount) {
-		return serviceAccountReconcileState{Provenance: serviceAccountProvenanceFromLabels(identity, serviceAccount), Established: true}, nil
+	if (serviceAccountStatusMatchesConfiguredName(identity) && identity.Status.ServiceAccountUID != "") ||
+		serviceAccountOwnedBy(identity, serviceAccount) {
+		return serviceAccountReconcileState{
+			Provenance:  serviceAccountProvenanceFromLabels(identity, serviceAccount),
+			Established: true,
+		}, nil
 	}
 	if err := validateUnownedServiceAccountAnnotations(serviceAccount); err != nil {
 		return serviceAccountReconcileState{}, err
@@ -474,7 +415,9 @@ func (r *WorkloadIdentityReconciler) deleteServiceAccountIfOwned(ctx context.Con
 	if recorded && provenance != azworkloadidentityv1alpha1.ServiceAccountProvenanceCreated {
 		return nil
 	}
-	if !recorded && (serviceAccount.Labels[serviceAccountCreatedBy] != trueValue || serviceAccount.Labels[serviceAccountUID] != string(identity.UID)) {
+	if !recorded &&
+		(serviceAccount.Labels[serviceAccountCreatedBy] != trueValue ||
+			serviceAccount.Labels[serviceAccountUID] != string(identity.UID)) {
 		return nil
 	}
 	return r.Delete(ctx, serviceAccount)

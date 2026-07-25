@@ -61,17 +61,6 @@ spec:
                     minLength: 3
                     pattern: ^[a-z0-9]([a-z0-9]|-[a-z0-9])+$
                     type: string
-                  location:
-                    description: location is the Azure region for issuer storage resources.
-                    minLength: 1
-                    type: string
-                  resourceGroupName:
-                    description: resourceGroupName is the Azure resource group containing
-                      issuer storage.
-                    maxLength: 90
-                    minLength: 1
-                    pattern: ^[A-Za-z0-9_().-]*[A-Za-z0-9_()-]$
-                    type: string
                   storageAccountName:
                     description: storageAccountName is the Azure Storage account that
                       serves OIDC discovery documents.
@@ -79,17 +68,9 @@ spec:
                     minLength: 3
                     pattern: ^[a-z0-9]{3,24}$
                     type: string
-                  subscriptionID:
-                    description: subscriptionID is the Azure subscription UUID containing
-                      issuer storage resources.
-                    pattern: ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$
-                    type: string
                 required:
                 - blobContainerName
-                - location
-                - resourceGroupName
                 - storageAccountName
-                - subscriptionID
                 type: object
               deletionPolicy:
                 default: Retain

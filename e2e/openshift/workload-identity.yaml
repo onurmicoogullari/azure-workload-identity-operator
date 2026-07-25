@@ -5,9 +5,6 @@ metadata:
   namespace: ${NAMESPACE}
 spec:
   azure:
-    subscriptionID: ${AZURE_SUBSCRIPTION_ID}
-    location: ${AZURE_LOCATION}
-    resourceGroupName: ${AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME}
     userAssignedIdentityName: ${AZURE_USER_ASSIGNED_IDENTITY_NAME}
     federatedIdentityCredentialName: ${AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME}
   serviceAccount:

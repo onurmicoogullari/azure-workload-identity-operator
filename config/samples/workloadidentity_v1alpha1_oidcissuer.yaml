@@ -7,9 +7,6 @@ metadata:
   name: default
 spec:
   azure:
-    subscriptionID: 00000000-0000-0000-0000-000000000000
-    location: swedencentral
-    resourceGroupName: rg-oidc
     storageAccountName: oidcissuerdemo123
     blobContainerName: oidc
   signingKey:

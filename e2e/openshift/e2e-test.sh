@@ -31,20 +31,15 @@ Optional env:
                                                 local mode uses this to test webhook handler logic, not API server admission integration
   ENSURE_KEY_VAULT                            default: true
   ENABLE_KEY_VAULT_RBAC                       default: true
-  AZURE_RESOURCE_GROUP_NAME                   default: rg-azwi-crc-storage-test (OIDCIssuer-owned group)
-  AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME default: rg-azwi-crc-wi-test
+  AZURE_RESOURCE_GROUP_NAME                   default: rg-azwi-crc-platform-test (shared platform-owned group)
   AZURE_KEY_VAULT_RESOURCE_GROUP_NAME         default: rg-azwi-crc-kv-test
-  REQUIRE_OPERATOR_CREATED_OIDC_RESOURCE_GROUP default: VERIFY_OIDC_RESOURCE_GROUP_DELETED
-  REQUIRE_OPERATOR_CREATED_WORKLOAD_IDENTITY_RESOURCE_GROUP default: VERIFY_WORKLOAD_IDENTITY_RESOURCE_GROUP_DELETED
-  VERIFY_OIDC_RESOURCE_GROUP_DELETED          default: ENSURE_KEY_VAULT
-  VERIFY_WORKLOAD_IDENTITY_RESOURCE_GROUP_DELETED default: true
   AZURE_STORAGE_ACCOUNT_NAME                  default: stazwicrctest
   AZURE_BLOB_CONTAINER_NAME                   default: oidc
   ASSIGN_OIDC_STORAGE_BLOB_ROLE               default: true
   OIDC_STORAGE_BLOB_ROLE                      default: Storage Blob Data Contributor
   OPERATOR_AZURE_PRINCIPAL_ID                 default: active Azure CLI principal object ID
   OPERATOR_AZURE_PRINCIPAL_TYPE               default: inferred from active Azure CLI account, or ServicePrincipal when OPERATOR_AZURE_PRINCIPAL_ID is set
-  AZURE_USER_ASSIGNED_IDENTITY_NAME           default: id-azwi-crc-test
+  AZURE_USER_ASSIGNED_IDENTITY_NAME           default: id-azwi-crc-test (suffix; Azure name is NAMESPACE-value)
   AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME    default: fidc-azwi-crc-test
   KEY_VAULT_NAME                              default: kv-azwi-<HHMMSS>-<random>
   KEY_VAULT_SECRET_NAME                       default: test-secret
@@ -84,8 +79,10 @@ Optional env:
 Example:
   ./e2e/openshift/e2e-test.sh
 
-The OIDCIssuer storage, WorkloadIdentity resources, and test Key Vault use
-separate Azure resource groups so each cleanup path is verified independently.
+The operator creates one shared Azure resource group for OIDCIssuer storage and
+WorkloadIdentity resources. The script verifies the operator retains it and
+deletes it manually during cleanup. Key Vault uses a separate script-created
+group.
 EOF
 }
 
@@ -131,7 +128,7 @@ begin_step() {
 
 script_step_description() {
   case "$1" in
-    1) printf 'Install Azure Workload Identity webhook.' ;;
+    1) printf 'Verify the shared Azure resource group is absent and install Azure Workload Identity webhook.' ;;
     2) printf 'Patch webhook deployment for OpenShift UID/SCC compatibility.' ;;
     3) printf 'Install operator CRDs.' ;;
     4) printf 'Start the operator locally.' ;;
@@ -144,15 +141,15 @@ script_step_description() {
     11) printf 'Wait for OpenShift to use the new issuer and mint tokens with that iss.' ;;
     12) printf 'Replace the retiring key Secret only, then verify periodic refresh republishes it.' ;;
     13) printf 'Create Key Vault.' ;;
-    14) printf 'Create WorkloadIdentity and verify ServiceAccount provenance across recreation.' ;;
-    15) printf 'Verify conflict handling for ServiceAccount and federated credential conflicts.' ;;
+    14) printf 'Create WorkloadIdentity and verify immutable naming and ServiceAccount provenance across recreation.' ;;
+    15) printf 'Verify ServiceAccount and Azure identity ownership conflict handling.' ;;
     16) printf 'Upload a real Key Vault secret and assign read access.' ;;
     17) printf 'Build and run the OpenShift Job.' ;;
     18) printf 'Verify the Job reads the Key Vault secret using workload identity.' ;;
     19) printf 'Mutate Azure federated credential and verify WorkloadIdentity periodic reconcile repairs it.' ;;
     20) printf 'Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.' ;;
     21) printf 'During cleanup, verify deletion is also rejected while OpenShift still references the issuer.' ;;
-    22) printf 'Restore OpenShift issuer, delete resources, and verify Azure and ServiceAccount cleanup.' ;;
+    22) printf 'Restore OpenShift issuer, delete resources, verify the shared group is retained, and clean it up.' ;;
     *) printf 'Run OpenShift e2e step.' ;;
   esac
 }
@@ -256,14 +253,12 @@ if [[ -z ${AZURE_TENANT_ID:-} ]]; then
   AZURE_TENANT_ID=$(az account show --query tenantId -o tsv)
 fi
 AZURE_LOCATION=${AZURE_LOCATION:-swedencentral}
-AZURE_RESOURCE_GROUP_NAME=${AZURE_RESOURCE_GROUP_NAME:-rg-azwi-crc-storage-test}
-AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME=${AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME:-rg-azwi-crc-wi-test}
+AZURE_RESOURCE_GROUP_NAME=${AZURE_RESOURCE_GROUP_NAME:-rg-azwi-crc-platform-test}
 AZURE_KEY_VAULT_RESOURCE_GROUP_NAME=${AZURE_KEY_VAULT_RESOURCE_GROUP_NAME:-rg-azwi-crc-kv-test}
 export AZURE_SUBSCRIPTION_ID
 export AZURE_TENANT_ID
 export AZURE_LOCATION
 export AZURE_RESOURCE_GROUP_NAME
-export AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME
 export AZURE_KEY_VAULT_RESOURCE_GROUP_NAME
 install_azure_workload_identity_webhook=${INSTALL_AZURE_WORKLOAD_IDENTITY_WEBHOOK:-true}
 azure_workload_identity_webhook_namespace=${AZURE_WORKLOAD_IDENTITY_WEBHOOK_NAMESPACE:-azure-workload-identity-system}
@@ -290,10 +285,6 @@ operator_workload_identity_refresh_interval=${OPERATOR_WORKLOAD_IDENTITY_REFRESH
 operator_webhook_url=${OPERATOR_WEBHOOK_URL:-https://127.0.0.1:9443/validate-workloadidentity-azure-micosolutions-se-v1alpha1-oidcissuer}
 ensure_key_vault=${ENSURE_KEY_VAULT:-true}
 enable_key_vault_rbac=${ENABLE_KEY_VAULT_RBAC:-true}
-verify_oidc_resource_group_deleted=${VERIFY_OIDC_RESOURCE_GROUP_DELETED:-$ensure_key_vault}
-require_operator_created_oidc_resource_group=${REQUIRE_OPERATOR_CREATED_OIDC_RESOURCE_GROUP:-$verify_oidc_resource_group_deleted}
-verify_workload_identity_resource_group_deleted=${VERIFY_WORKLOAD_IDENTITY_RESOURCE_GROUP_DELETED:-true}
-require_operator_created_workload_identity_resource_group=${REQUIRE_OPERATOR_CREATED_WORKLOAD_IDENTITY_RESOURCE_GROUP:-$verify_workload_identity_resource_group_deleted}
 AZURE_STORAGE_ACCOUNT_NAME=${AZURE_STORAGE_ACCOUNT_NAME:-stazwicrctest}
 AZURE_BLOB_CONTAINER_NAME=${AZURE_BLOB_CONTAINER_NAME:-oidc}
 export AZURE_STORAGE_ACCOUNT_NAME
@@ -317,6 +308,7 @@ key_vault_secret_writer_role=${KEY_VAULT_SECRET_WRITER_ROLE:-Key Vault Secrets O
 NAMESPACE=${NAMESPACE:-azwi-crc-test}
 WORKLOAD_IDENTITY_NAME=${WORKLOAD_IDENTITY_NAME:-azwi-crc-test}
 SERVICE_ACCOUNT_NAME=${SERVICE_ACCOUNT_NAME:-$WORKLOAD_IDENTITY_NAME}
+AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME="$NAMESPACE-$AZURE_USER_ASSIGNED_IDENTITY_NAME"
 SIGNING_KEY_SECRET_NAMESPACE=${SIGNING_KEY_SECRET_NAMESPACE:-openshift-kube-apiserver}
 SIGNING_KEY_SECRET_NAME=${SIGNING_KEY_SECRET_NAME:-bound-service-account-signing-key}
 SIGNING_KEY_SECRET_KEY=${SIGNING_KEY_SECRET_KEY:-service-account.pub}
@@ -337,6 +329,7 @@ KEY_VAULT_READ_TIMEOUT_SECONDS=${KEY_VAULT_READ_TIMEOUT_SECONDS:-300}
 export NAMESPACE
 export WORKLOAD_IDENTITY_NAME
 export SERVICE_ACCOUNT_NAME
+export AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME
 export SIGNING_KEY_SECRET_NAMESPACE
 export SIGNING_KEY_SECRET_NAME
 export SIGNING_KEY_SECRET_KEY
@@ -365,24 +358,25 @@ if [[ $install_operator_crds == "true" || $run_operator_locally == "true" ]]; th
   need make
   need go
 fi
+need openssl
 if [[ $run_operator_locally == "true" ]]; then
   need curl
-  need openssl
 fi
 if [[ $verify_signing_key_rotation == "true" ]]; then
   need curl
-  need openssl
 fi
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../.." && pwd)
 tmpdir=""
 operator_pid=""
+operator_paused=false
 operator_webhook_cert_dir=""
 vault_id=""
 # Cleanup ownership:
 # - script-created resources are tracked here and deleted by this script
-# - operator-created Azure resources are deleted only by deleting their CRs and waiting for finalizers
+# - operator-created child resources are deleted only by deleting their CRs and waiting for finalizers
+# - the shared group starts absent and is operator-created, but the script assumes explicit cleanup responsibility
 applied_oidc_issuer=false
 applied_workload_identity=false
 created_buildconfig=false
@@ -406,6 +400,7 @@ active_azure_principal_type=""
 primary_failure=""
 cleanup_failed=false
 created_key_vault_resource_group=false
+cleanup_shared_resource_group_enabled=false
 created_role_assignment_ids=()
 
 cleanup_job() {
@@ -435,9 +430,6 @@ cleanup_conflict_service_account() {
 cleanup_workload_identity() {
   workload_identity_deleted=false
   if [[ $applied_workload_identity == "true" ]]; then
-    if [[ $verify_workload_identity_resource_group_deleted == "true" && $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" && $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME != "$AZURE_RESOURCE_GROUP_NAME" ]]; then
-      log WATCH "Deleting WorkloadIdentity/$WORKLOAD_IDENTITY_NAME and waiting for its finalizer to delete Azure resource group $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME"
-    fi
     if cleanup_kubernetes_resource "workloadidentity/$WORKLOAD_IDENTITY_NAME" "$NAMESPACE"; then
       workload_identity_deleted=true
       if [[ $expect_workload_identity_service_account_deleted == "true" && $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" ]]; then
@@ -445,18 +437,11 @@ cleanup_workload_identity() {
         wait_for_kubernetes_resource_absent "serviceaccount/$SERVICE_ACCOUNT_NAME" "$NAMESPACE" || return $?
         log VERIFY "WorkloadIdentity deletion removed operator-created ServiceAccount/$SERVICE_ACCOUNT_NAME"
       fi
+      if [[ $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" ]]; then
+        wait_for_workload_identity_azure_resources_deleted || return $?
+      fi
     else
       return 1
-    fi
-  fi
-}
-
-verify_workload_identity_resource_group_cleanup() {
-  if [[ $workload_identity_deleted == "true" && $verify_workload_identity_resource_group_deleted == "true" && $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" ]]; then
-    if [[ $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME == "$AZURE_RESOURCE_GROUP_NAME" ]]; then
-      log SKIP "Skipping separate WorkloadIdentity resource group deletion verification because it matches the OIDCIssuer resource group"
-    else
-      wait_for_azure_resource_group_deleted "$AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME" "$wait_timeout" "Operator deleted WorkloadIdentity Azure resource group"
     fi
   fi
 }
@@ -471,20 +456,24 @@ cleanup_oidc_issuer() {
     fi
     begin_step 22
     handoff_openshift_service_account_issuer_before_oidcissuer_delete || return 1
-    if [[ $verify_oidc_resource_group_deleted == "true" && $OIDC_ISSUER_DELETION_POLICY == "Delete" ]]; then
-      log WATCH "Deleting OIDCIssuer/default and waiting for its finalizer to delete Azure resource group $AZURE_RESOURCE_GROUP_NAME"
-    fi
     if cleanup_kubernetes_resource oidcissuer/default ""; then
       oidc_deleted=true
+      if [[ $OIDC_ISSUER_DELETION_POLICY == "Delete" ]]; then
+        wait_for_oidc_storage_account_deleted || return $?
+      fi
     else
       return 1
     fi
   fi
 }
 
-verify_oidc_resource_group_cleanup() {
-  if [[ $oidc_deleted == "true" && $verify_oidc_resource_group_deleted == "true" && $OIDC_ISSUER_DELETION_POLICY == "Delete" ]]; then
-    wait_for_azure_resource_group_deleted "$AZURE_RESOURCE_GROUP_NAME" "$wait_timeout" "Operator deleted OIDCIssuer Azure resource group"
+verify_shared_resource_group_retained() {
+  if [[ $workload_identity_deleted == "true" && $oidc_deleted == "true" ]]; then
+    if ! az group show -n "$AZURE_RESOURCE_GROUP_NAME" --query id -o tsv >/dev/null 2>&1; then
+      log ERROR "Shared platform resource group $AZURE_RESOURCE_GROUP_NAME was deleted by the operator"
+      return 1
+    fi
+    log VERIFY "Operator retained shared platform resource group $AZURE_RESOURCE_GROUP_NAME"
   fi
 }
 
@@ -503,9 +492,36 @@ cleanup_build_artifacts() {
   fi
 }
 
+pause_local_operator() {
+  if [[ $run_operator_locally != "true" ]]; then
+    return
+  fi
+  if [[ -z $operator_pid ]] || ! kill -0 "$operator_pid" >/dev/null 2>&1; then
+    log ERROR "Cannot pause local operator because its process is not running"
+    return 1
+  fi
+  if ! kill -STOP "$operator_pid"; then
+    log ERROR "Could not pause local operator process $operator_pid"
+    return 1
+  fi
+  operator_paused=true
+}
+
+resume_local_operator() {
+  if [[ $operator_paused != "true" ]]; then
+    return
+  fi
+  if ! kill -CONT "$operator_pid"; then
+    log ERROR "Could not resume local operator process $operator_pid"
+    return 1
+  fi
+  operator_paused=false
+}
+
 stop_local_operator() {
   local deadline
   if [[ -n $operator_pid ]]; then
+    resume_local_operator >/dev/null 2>&1 || true
     pkill -TERM -P "$operator_pid" >/dev/null 2>&1 || true
     kill "$operator_pid" >/dev/null 2>&1 || true
     deadline=$((SECONDS + 30))
@@ -578,6 +594,19 @@ cleanup_key_vault_resource_group() {
   fi
 
   return 0
+}
+
+cleanup_shared_resource_group() {
+  if [[ $cleanup_shared_resource_group_enabled != "true" ]]; then
+    return
+  fi
+  if ! az group show -n "$AZURE_RESOURCE_GROUP_NAME" --query id -o tsv >/dev/null 2>&1; then
+    return
+  fi
+
+  log DELETE "Deleting operator-created shared platform resource group $AZURE_RESOURCE_GROUP_NAME"
+  az group delete -n "$AZURE_RESOURCE_GROUP_NAME" --yes --no-wait >/dev/null || return 1
+  wait_for_azure_resource_group_deleted "$AZURE_RESOURCE_GROUP_NAME" "$wait_timeout" "Script deleted shared platform Azure resource group"
 }
 
 cleanup_role_assignments() {
@@ -1085,14 +1114,14 @@ cleanup() {
   cleanup_step "delete conflict WorkloadIdentity CR" cleanup_conflict_workload_identity
   cleanup_step "delete conflict ServiceAccount" cleanup_conflict_service_account
   cleanup_step "delete WorkloadIdentity CR" cleanup_workload_identity
-  cleanup_step "verify WorkloadIdentity Azure cleanup" verify_workload_identity_resource_group_cleanup
   cleanup_step "delete OIDCIssuer CR" cleanup_oidc_issuer "$verify_openshift_handoff_guard"
-  cleanup_step "verify OIDCIssuer Azure cleanup" verify_oidc_resource_group_cleanup
+  cleanup_step "verify shared platform resource group retention" verify_shared_resource_group_retained
   cleanup_step "delete script-created role assignments" cleanup_role_assignments
   cleanup_step "delete OpenShift build artifacts" cleanup_build_artifacts
   cleanup_step "delete Key Vault resources" cleanup_key_vault_resource_group
   cleanup_step "delete retiring signing key Secret" cleanup_retiring_signing_key_secret
   cleanup_step "stop local operator" stop_local_operator
+  cleanup_step "delete operator-created shared platform resource group" cleanup_shared_resource_group
   cleanup_step "uninstall Azure Workload Identity webhook" cleanup_workload_identity_webhook_release
   cleanup_step "delete test namespace" cleanup_test_namespace
   cleanup_step "delete Azure Workload Identity webhook namespace" cleanup_workload_identity_webhook_namespace
@@ -1230,33 +1259,36 @@ wait_for_storage_account_id() {
   exit 1
 }
 
-assert_oidc_resource_group_absent() {
-  if [[ $require_operator_created_oidc_resource_group != "true" ]]; then
-    return
-  fi
+wait_for_shared_resource_group_created() {
+  local deadline
+  local resource_group_id
+  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
 
-  if az group show -n "$AZURE_RESOURCE_GROUP_NAME" --query id -o tsv >/dev/null 2>&1; then
-    log ERROR "Resource group $AZURE_RESOURCE_GROUP_NAME already exists.
-This e2e test is configured to verify OIDCIssuer-created resource group deletion, so the OIDCIssuer must create the group itself.
-Delete the resource group, choose another AZURE_RESOURCE_GROUP_NAME, or set REQUIRE_OPERATOR_CREATED_OIDC_RESOURCE_GROUP=false and VERIFY_OIDC_RESOURCE_GROUP_DELETED=false."
-    exit 1
-  fi
+  log WATCH "Waiting for the operator to create shared platform resource group $AZURE_RESOURCE_GROUP_NAME"
+  while (( SECONDS < deadline )); do
+    resource_group_id=$(az group show \
+      --name "$AZURE_RESOURCE_GROUP_NAME" \
+      --query id \
+      -o tsv 2>/dev/null || true)
+    if [[ -n $resource_group_id ]]; then
+      log VERIFY "Operator created shared platform resource group $AZURE_RESOURCE_GROUP_NAME"
+      return
+    fi
+    sleep 10
+  done
+
+  log ERROR "Timed out waiting for the operator to create shared platform resource group $AZURE_RESOURCE_GROUP_NAME"
+  return 1
 }
 
-assert_workload_identity_resource_group_absent() {
-  if [[ $require_operator_created_workload_identity_resource_group != "true" ]]; then
-    return
-  fi
-  if [[ $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME == "$AZURE_RESOURCE_GROUP_NAME" ]]; then
-    return
-  fi
-
-  if az group show -n "$AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME" --query id -o tsv >/dev/null 2>&1; then
-    log ERROR "Resource group $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME already exists.
-This e2e test is configured to verify WorkloadIdentity-created resource group deletion, so the WorkloadIdentity must create the group itself.
-Delete the resource group, choose another AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME, or set REQUIRE_OPERATOR_CREATED_WORKLOAD_IDENTITY_RESOURCE_GROUP=false and VERIFY_WORKLOAD_IDENTITY_RESOURCE_GROUP_DELETED=false."
+assert_shared_resource_group_absent() {
+  if az group show -n "$AZURE_RESOURCE_GROUP_NAME" --query id -o tsv >/dev/null 2>&1; then
+    log ERROR "Resource group $AZURE_RESOURCE_GROUP_NAME already exists.
+This e2e test verifies that the operator creates the configured shared platform group when it is absent.
+Delete the resource group or choose another AZURE_RESOURCE_GROUP_NAME."
     exit 1
   fi
+  cleanup_shared_resource_group_enabled=true
 }
 
 assert_key_vault_resource_group_absent() {
@@ -1318,6 +1350,59 @@ upload_key_vault_secret_with_retry() {
     log RETRY "Key Vault secret upload is not authorized yet; retrying"
     sleep 10
   done
+}
+
+wait_for_workload_identity_azure_resources_deleted() {
+  local deadline
+  local identity_id
+  local credential_id
+  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+
+  log WATCH "Waiting for WorkloadIdentity deletion to remove user assigned identity $AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME and cascade to federated credential $AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME"
+  while (( SECONDS < deadline )); do
+    identity_id=$(az identity show \
+      --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+      --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+      --query id \
+      -o tsv 2>/dev/null || true)
+    credential_id=$(az identity federated-credential show \
+      --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+      --identity-name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+      --name "$AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME" \
+      --query id \
+      -o tsv 2>/dev/null || true)
+    if [[ -z $identity_id && -z $credential_id ]]; then
+      log VERIFY "WorkloadIdentity deletion removed its user assigned identity and Azure removed the child federated credential"
+      return
+    fi
+    sleep 10
+  done
+
+  log ERROR "Timed out waiting for WorkloadIdentity Azure resources to be deleted"
+  return 1
+}
+
+wait_for_oidc_storage_account_deleted() {
+  local deadline
+  local storage_account_id
+  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+
+  log WATCH "Waiting for OIDCIssuer deletion to remove storage account $AZURE_STORAGE_ACCOUNT_NAME"
+  while (( SECONDS < deadline )); do
+    storage_account_id=$(az storage account show \
+      --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+      --name "$AZURE_STORAGE_ACCOUNT_NAME" \
+      --query id \
+      -o tsv 2>/dev/null || true)
+    if [[ -z $storage_account_id ]]; then
+      log VERIFY "OIDCIssuer deletion removed its operator-created storage account"
+      return
+    fi
+    sleep 10
+  done
+
+  log ERROR "Timed out waiting for OIDCIssuer storage account to be deleted"
+  return 1
 }
 
 install_workload_identity_webhook() {
@@ -1521,16 +1606,27 @@ EOF
 }
 
 start_local_operator() {
+  local operator_binary
+
   if [[ $run_operator_locally != "true" ]]; then
     return
   fi
 
   generate_local_operator_webhook_certificates
+  operator_binary="$tmpdir/azure-workload-identity-operator"
   operator_log_file=${operator_log_file:-$tmpdir/operator.log}
+  log BUILD "Building local azure-workload-identity-operator binary"
+  (
+    cd "$repo_root"
+    go build -o "$operator_binary" ./cmd/main.go
+  )
   log RUN "Starting azure-workload-identity-operator locally on health probe $operator_health_probe_bind_address; logs: $operator_log_file"
   (
     cd "$repo_root"
-    go run ./cmd/main.go \
+    exec "$operator_binary" \
+      --azure-subscription-id="$AZURE_SUBSCRIPTION_ID" \
+      --azure-resource-group-name="$AZURE_RESOURCE_GROUP_NAME" \
+      --azure-location="$AZURE_LOCATION" \
       --health-probe-bind-address="$operator_health_probe_bind_address" \
       --oidc-issuer-refresh-interval="$operator_oidc_issuer_refresh_interval" \
       --workload-identity-refresh-interval="$operator_workload_identity_refresh_interval" \
@@ -2461,9 +2557,6 @@ metadata:
   namespace: $NAMESPACE
 spec:
   azure:
-    subscriptionID: $AZURE_SUBSCRIPTION_ID
-    location: $AZURE_LOCATION
-    resourceGroupName: $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME
     userAssignedIdentityName: $AZURE_USER_ASSIGNED_IDENTITY_NAME
     federatedIdentityCredentialName: fidc-conflict-safe-reconcile
   serviceAccount:
@@ -2478,7 +2571,7 @@ EOF
     return
   fi
 
-  log VERIFY "Verifying WorkloadIdentity reconciliation reports Azure federated credential conflicts"
+  log VERIFY "Verifying WorkloadIdentity reconciliation rejects a second owner for an existing Azure identity"
   cat <<EOF | kubectl apply -f - >/dev/null
 apiVersion: workloadidentity.azure.micosolutions.se/v1alpha1
 kind: WorkloadIdentity
@@ -2487,9 +2580,6 @@ metadata:
   namespace: $NAMESPACE
 spec:
   azure:
-    subscriptionID: $AZURE_SUBSCRIPTION_ID
-    location: $AZURE_LOCATION
-    resourceGroupName: $AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME
     userAssignedIdentityName: $AZURE_USER_ASSIGNED_IDENTITY_NAME
     federatedIdentityCredentialName: $AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME
   serviceAccount:
@@ -2497,7 +2587,63 @@ spec:
   deletionPolicy: Retain
 EOF
   applied_federated_credential_conflict_workload_identity=true
-  wait_for_workloadidentity_ready_false_reason "$federated_credential_conflict_name" FederatedIdentityCredentialConflict "$wait_timeout" || return 1
+  wait_for_workloadidentity_ready_false_reason "$federated_credential_conflict_name" AzureResourceOwnershipConflict "$wait_timeout" || return 1
+}
+
+verify_workload_identity_immutable_name_and_tags() {
+  local patch_output
+  local configured_name
+  local workload_identity_uid
+  local expected_logical_key
+  local created_by_operator
+  local logical_key
+  local tagged_uid
+  local obsolete_federated_credential_name
+
+  log VERIFY "Verifying WorkloadIdentity ServiceAccount name is immutable"
+  if patch_output=$(kubectl patch workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" \
+    --type=merge \
+    -p "{\"spec\":{\"serviceAccount\":{\"name\":\"${SERVICE_ACCOUNT_NAME}-renamed\"}}}" 2>&1); then
+    log ERROR "WorkloadIdentity/$WORKLOAD_IDENTITY_NAME accepted a ServiceAccount name change"
+    return 1
+  fi
+  if [[ $patch_output != *"field is immutable"* ]]; then
+    log ERROR "ServiceAccount name update failed for an unexpected reason: $patch_output"
+    return 1
+  fi
+  configured_name=$(kubectl get workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.serviceAccount.name}')
+  if [[ $configured_name != "$SERVICE_ACCOUNT_NAME" ]]; then
+    log ERROR "WorkloadIdentity/$WORKLOAD_IDENTITY_NAME ServiceAccount name changed to $configured_name"
+    return 1
+  fi
+
+  workload_identity_uid=$(kubectl get workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')
+  expected_logical_key=$(printf '%s' "$NAMESPACE/$WORKLOAD_IDENTITY_NAME" | openssl dgst -sha256 -r | awk '{print $1}')
+  created_by_operator=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."created-by-operator"' -o tsv)
+  logical_key=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."workload-identity-key"' -o tsv)
+  tagged_uid=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."workload-identity-uid"' -o tsv)
+  obsolete_federated_credential_name=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."federated-credential-name"' -o tsv)
+  if [[ $created_by_operator != "true" || $logical_key != "$expected_logical_key" || $tagged_uid != "$workload_identity_uid" ]]; then
+    log ERROR "User assigned identity ownership tags do not match the WorkloadIdentity"
+    return 1
+  fi
+  if [[ -n $obsolete_federated_credential_name ]]; then
+    log ERROR "User assigned identity still has obsolete federated-credential-name tag"
+    return 1
+  fi
+  log VERIFY "WorkloadIdentity immutable name and UAMI ownership tags are correct"
 }
 
 verify_workload_identity_service_account_recreation() {
@@ -2509,6 +2655,9 @@ verify_workload_identity_service_account_recreation() {
   local expected_client_id
   local expected_tenant_id
   local create_output
+  local create_attempt
+  local manual_replacement_uid
+  local replacement_created=false
   local deadline
   local service_account_state
   local current_service_account_uid
@@ -2545,21 +2694,54 @@ verify_workload_identity_service_account_recreation() {
   fi
   log VERIFY "WorkloadIdentity/$WORKLOAD_IDENTITY_NAME recorded Created provenance for ServiceAccount/$SERVICE_ACCOUNT_NAME"
 
-  log DELETE "Deleting ServiceAccount/$SERVICE_ACCOUNT_NAME to verify same-name recreation"
-  kubectl delete serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" --wait=true --timeout="$wait_timeout" >/dev/null
-
-  log CREATE "Recreating ServiceAccount/$SERVICE_ACCOUNT_NAME without managed metadata"
-  if ! create_output=$(kubectl create serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" 2>&1); then
-    if kubectl get serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
-      log WATCH "Operator recreated ServiceAccount/$SERVICE_ACCOUNT_NAME before the e2e script"
-    else
-      log ERROR "Could not recreate ServiceAccount/$SERVICE_ACCOUNT_NAME: $create_output"
-      return 1
-    fi
+  log PAUSE "Pausing the local operator so the script deterministically creates the replacement ServiceAccount"
+  if ! pause_local_operator; then
+    return 1
   fi
 
+  log DELETE "Deleting ServiceAccount/$SERVICE_ACCOUNT_NAME to verify same-name recreation"
+  if ! kubectl delete serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" --wait=true --timeout="$wait_timeout" >/dev/null; then
+    resume_local_operator || true
+    return 1
+  fi
+
+  log CREATE "Recreating ServiceAccount/$SERVICE_ACCOUNT_NAME without managed metadata"
+  for create_attempt in {1..10}; do
+    if create_output=$(kubectl create serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" 2>&1); then
+      replacement_created=true
+      break
+    fi
+    if kubectl get serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+      log WATCH "Operator recreated ServiceAccount/$SERVICE_ACCOUNT_NAME first; retrying manual replacement"
+      if ! kubectl delete serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" --wait=true --timeout="$wait_timeout" >/dev/null; then
+        resume_local_operator || true
+        return 1
+      fi
+      continue
+    fi
+    log ERROR "Could not recreate ServiceAccount/$SERVICE_ACCOUNT_NAME: $create_output"
+    resume_local_operator || true
+    return 1
+  done
+  if [[ $replacement_created != "true" ]]; then
+    log ERROR "Could not win ServiceAccount/$SERVICE_ACCOUNT_NAME recreation race after $create_attempt attempts"
+    resume_local_operator || true
+    return 1
+  fi
+
+  if ! manual_replacement_uid=$(kubectl get serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}'); then
+    resume_local_operator || true
+    return 1
+  fi
   log UPDATE "Adding benign ServiceAccount metadata drift for reconciliation"
-  kubectl patch serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" --type=merge -p '{"metadata":{"labels":{"workloadidentity.azure.micosolutions.se/created-by-operator":"false"},"annotations":{"azure.workload.identity/client-id":"drifted-client-id"}}}' >/dev/null
+  if ! kubectl patch serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" --type=merge -p '{"metadata":{"labels":{"e2e.azure.micosolutions.se/recreated":"true","workloadidentity.azure.micosolutions.se/created-by-operator":"false"}}}' >/dev/null; then
+    resume_local_operator || true
+    return 1
+  fi
+  log RUN "Resuming the local operator to reconcile the replacement ServiceAccount"
+  if ! resume_local_operator; then
+    return 1
+  fi
 
   deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
   log WATCH "Waiting for WorkloadIdentity reconciliation to preserve provenance and repair ServiceAccount metadata"
@@ -2570,6 +2752,7 @@ verify_workload_identity_service_account_recreation() {
     IFS=$'\t' read -r current_service_account_uid use_label managed_by_label owner_uid_label created_by_label client_id_annotation tenant_id_annotation <<<"$service_account_state"
 
     if [[ -n $current_service_account_uid &&
+      $current_service_account_uid == "$manual_replacement_uid" &&
       $current_service_account_uid != "$initial_service_account_uid" &&
       $status_service_account_uid == "$current_service_account_uid" &&
       $provenance == "Created" &&
@@ -2666,8 +2849,8 @@ verify_workload_identity_azure_drift_recovery() {
 
   log UPDATE "Mutating Azure federated credential to verify periodic WorkloadIdentity drift recovery"
   if ! az identity federated-credential update \
-    --resource-group "$AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME" \
-    --identity-name "$AZURE_USER_ASSIGNED_IDENTITY_NAME" \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --identity-name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
     --name "$AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME" \
     --issuer "$drift_issuer" \
     --subject "$drift_subject" \
@@ -2681,8 +2864,8 @@ verify_workload_identity_azure_drift_recovery() {
   log WATCH "Waiting for WorkloadIdentity periodic reconcile to restore Azure federated credential"
   while ((SECONDS < deadline)); do
     credential_tuple=$(az identity federated-credential show \
-      --resource-group "$AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME" \
-      --identity-name "$AZURE_USER_ASSIGNED_IDENTITY_NAME" \
+      --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+      --identity-name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
       --name "$AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME" \
       --query '[issuer, subject, audiences[0]]' \
       -o tsv 2>/dev/null || true)
@@ -2695,8 +2878,8 @@ verify_workload_identity_azure_drift_recovery() {
 
   log ERROR "Timed out waiting for WorkloadIdentity periodic reconcile to restore Azure federated credential"
   az identity federated-credential show \
-    --resource-group "$AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME" \
-    --identity-name "$AZURE_USER_ASSIGNED_IDENTITY_NAME" \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --identity-name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
     --name "$AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME" \
     -o json >&2 || true
   return 1
@@ -2707,7 +2890,7 @@ render() {
   local content
   content=$(<"$file")
   local vars=(
-    AZURE_SUBSCRIPTION_ID AZURE_LOCATION AZURE_RESOURCE_GROUP_NAME AZURE_WORKLOAD_IDENTITY_RESOURCE_GROUP_NAME AZURE_STORAGE_ACCOUNT_NAME AZURE_BLOB_CONTAINER_NAME
+    AZURE_STORAGE_ACCOUNT_NAME AZURE_BLOB_CONTAINER_NAME
     SIGNING_KEY_SECRET_NAMESPACE SIGNING_KEY_SECRET_NAME SIGNING_KEY_SECRET_KEY OPENSHIFT_UPDATE_SERVICE_ACCOUNT_ISSUER OIDC_ISSUER_DELETION_POLICY
     NAMESPACE WORKLOAD_IDENTITY_NAME SERVICE_ACCOUNT_NAME AZURE_USER_ASSIGNED_IDENTITY_NAME AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME WORKLOAD_IDENTITY_DELETION_POLICY
     IMAGE_NAME JOB_NAME KEY_VAULT_NAME KEY_VAULT_SECRET_NAME KEY_VAULT_READ_TIMEOUT_SECONDS
@@ -2722,8 +2905,7 @@ render() {
 tmpdir=$(mktemp -d)
 
 begin_step 1
-assert_oidc_resource_group_absent
-assert_workload_identity_resource_group_absent
+assert_shared_resource_group_absent
 assert_key_vault_resource_group_absent
 install_workload_identity_webhook
 
@@ -2745,6 +2927,7 @@ capture_original_openshift_service_account_issuer
 log APPLY "Applying OIDCIssuer/default"
 render "$script_dir/oidc-issuer.yaml" | kubectl apply -f -
 applied_oidc_issuer=true
+wait_for_shared_resource_group_created
 
 begin_step 7
 if [[ $assign_oidc_storage_blob_role == "true" ]]; then
@@ -2790,6 +2973,7 @@ render "$script_dir/workload-identity.yaml" | kubectl apply -f -
 applied_workload_identity=true
 log WATCH "Waiting for WorkloadIdentity/$WORKLOAD_IDENTITY_NAME to become Ready"
 kubectl wait --for=condition=Ready "workloadidentity/$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" --timeout="$wait_timeout"
+verify_workload_identity_immutable_name_and_tags
 verify_workload_identity_service_account_recreation
 
 begin_step 15

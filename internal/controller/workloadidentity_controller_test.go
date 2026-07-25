@@ -28,6 +28,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -41,7 +42,6 @@ const (
 	testWorkloadNamespace         = "default"
 	testServiceAccountName        = "test-sa"
 	testOtherServiceAccountName   = "other-sa"
-	testOtherFederatedCredential  = "other-fic"
 	testClientID                  = "client-id"
 	testTenantID                  = "tenant-id"
 	testExistingLabel             = "existing"
@@ -54,7 +54,6 @@ type fakeWorkloadIdentityManager struct {
 	ensures  int
 	deletes  int
 	subject  string
-	options  workloadidentity.DeleteOptions
 }
 
 func (f *fakeWorkloadIdentityManager) Ensure(_ context.Context, _ *workloadidentityv1alpha1.WorkloadIdentity, _, subject string) (workloadidentity.ManagedIdentity, error) {
@@ -68,12 +67,6 @@ func (f *fakeWorkloadIdentityManager) Ensure(_ context.Context, _ *workloadident
 
 func (f *fakeWorkloadIdentityManager) Delete(context.Context, *workloadidentityv1alpha1.WorkloadIdentity) error {
 	f.deletes++
-	return f.err
-}
-
-func (f *fakeWorkloadIdentityManager) DeleteWithOptions(_ context.Context, _ *workloadidentityv1alpha1.WorkloadIdentity, options workloadidentity.DeleteOptions) error {
-	f.deletes++
-	f.options = options
 	return f.err
 }
 
@@ -98,24 +91,6 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 		})
 	})
 
-	Describe("Shared-parent deletion election", func() {
-		It("can elect different coordinators for resource-group and identity scopes", func() {
-			current := deletionReference{key: "default/b", uid: "uid-b", deleting: true}
-			resourceGroupSuccessor, waitForResourceGroup := deletionSuccessor(current, []deletionReference{
-				{key: "default/a", uid: "uid-a", deleting: true},
-				{key: "default/c", uid: "uid-c", deleting: true},
-			})
-			identitySuccessor, waitForIdentity := deletionSuccessor(current, []deletionReference{
-				{key: "default/c", uid: "uid-c", deleting: true},
-			})
-
-			Expect(resourceGroupSuccessor).To(Equal("uid-a"))
-			Expect(waitForResourceGroup).To(BeFalse())
-			Expect(identitySuccessor).To(BeEmpty())
-			Expect(waitForIdentity).To(BeTrue())
-		})
-	})
-
 	Describe("ServiceAccount provenance", func() {
 		It("does not accept provenance without a recorded ServiceAccount subject", func() {
 			identity := validWorkloadIdentity("test-workload", testWorkloadNamespace)
@@ -126,15 +101,36 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(recorded).To(BeFalse())
 		})
 
-		It("does not carry provenance across a configured ServiceAccount name change", func() {
-			identity := validWorkloadIdentity("test-workload", testWorkloadNamespace)
-			identity.Status.Subject = "system:serviceaccount:default:test-sa"
-			identity.Status.ServiceAccountProvenance = workloadidentityv1alpha1.ServiceAccountProvenanceCreated
-			identity.Spec.ServiceAccount.Name = testOtherServiceAccountName
+	})
 
-			_, recorded := persistedServiceAccountProvenance(identity)
+	Describe("CRD immutability without webhooks", func() {
+		It("rejects changes to Azure names and the ServiceAccount name", func() {
+			ctx := context.Background()
+			key := types.NamespacedName{Name: "cel-immutability", Namespace: testWorkloadNamespace}
+			identity := validWorkloadIdentity(key.Name, key.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			DeferCleanup(func() {
+				deleteWorkloadIdentity(ctx, key)
+			})
 
-			Expect(recorded).To(BeFalse())
+			current := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
+			current.Spec.Azure.UserAssignedIdentityName = "different"
+			err := k8sClient.Update(ctx, current)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("field is immutable"))
+
+			Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
+			current.Spec.Azure.FederatedIdentityCredentialName = "different"
+			err = k8sClient.Update(ctx, current)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("field is immutable"))
+
+			Expect(k8sClient.Get(ctx, key, current)).To(Succeed())
+			current.Spec.ServiceAccount.Name = testOtherServiceAccountName
+			err = k8sClient.Update(ctx, current)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("field is immutable"))
 		})
 	})
 
@@ -169,7 +165,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 				PrincipalID: "principal-id",
 				TenantID:    testTenantID,
 				AzureResources: []workloadidentityv1alpha1.AzureResource{{
-					ID:   "/subscriptions/test/resourceGroups/rg-wi-test/providers/Microsoft.ManagedIdentity/userAssignedIdentities/uami-test",
+					ID:   "/subscriptions/test/resourceGroups/rg-wi-test/providers/Microsoft.ManagedIdentity/userAssignedIdentities/default-uami-test",
 					Kind: "UserAssignedIdentity",
 				}},
 			}}
@@ -351,6 +347,46 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			condition := apimeta.FindStatusCondition(updated.Status.Conditions, string(workloadidentityv1alpha1.WorkloadIdentityConditionReady))
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("preserves logical provenance when the ServiceAccount is replaced after inspection", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			originalServiceAccount := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, originalServiceAccount)).To(Succeed())
+			manager.onEnsure = func() {
+				manager.onEnsure = nil
+				Expect(k8sClient.Delete(ctx, originalServiceAccount)).To(Succeed())
+				Eventually(func() bool {
+					return apierrors.IsNotFound(k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{}))
+				}).Should(BeTrue())
+				Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+					Name:      serviceAccountKey.Name,
+					Namespace: serviceAccountKey.Namespace,
+					Labels:    map[string]string{testExistingLabel: trueValue},
+				}})).To(Succeed())
+			}
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			replacement := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, serviceAccountKey, replacement)).To(Succeed())
+			Expect(replacement.UID).NotTo(Equal(originalServiceAccount.UID))
+			Expect(replacement.Labels[testExistingLabel]).To(Equal(trueValue))
+			Expect(replacement.Labels[serviceAccountCreatedBy]).To(Equal(trueValue))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			Expect(updated.Status.ServiceAccountUID).To(Equal(string(replacement.UID)))
+			Expect(updated.Status.ServiceAccountProvenance).To(Equal(workloadidentityv1alpha1.ServiceAccountProvenanceCreated))
 		})
 
 		It("repairs Azure annotation drift on a recreated ServiceAccount", func() {
@@ -581,28 +617,29 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(condition.Reason).To(Equal("ServiceAccountConflict"))
 		})
 
-		It("maps Azure conflict errors to stable status reasons", func() {
+		It("does not write a ServiceAccount when Azure recovery is required", func() {
 			createReadyOIDCIssuer(ctx, issuerKey.Name)
 			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{
 				err: workloadidentity.NewConflictError(
-					workloadidentity.ReasonFederatedIdentityCredentialConflict,
-					"federated identity credential conflicts with an existing trust tuple",
+					workloadidentity.ReasonRecoveryRequired,
+					"an earlier WorkloadIdentity instance owns the user assigned identity",
 				),
 			}
 			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
-			Expect(err).To(MatchError(ContainSubstring("federated identity credential conflicts")))
+			Expect(err).To(MatchError(ContainSubstring("earlier WorkloadIdentity instance")))
 			Expect(manager.ensures).To(Equal(1))
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{}))).To(BeTrue())
 
 			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
 			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
 			condition := apimeta.FindStatusCondition(updated.Status.Conditions, string(workloadidentityv1alpha1.WorkloadIdentityConditionReady))
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-			Expect(condition.Reason).To(Equal(workloadidentity.ReasonFederatedIdentityCredentialConflict))
+			Expect(condition.Reason).To(Equal(workloadidentity.ReasonRecoveryRequired))
 		})
 
 		It("waits when the OIDCIssuer is not ready", func() {
@@ -805,89 +842,106 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Get(ctx, serviceAccountKey, adoptedServiceAccount)).To(Succeed())
 		})
 
-		It("preserves Azure parents referenced by another WorkloadIdentity during deletion", func() {
+		It("retains Azure resources and the ServiceAccount when deletion policy is Retain", func() {
 			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
 			identity.Finalizers = []string{workloadIdentityFinalizer}
-			identity.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
-
-			otherIdentity := validWorkloadIdentity(otherIdentityKey.Name, otherIdentityKey.Namespace)
-			otherIdentity.Spec.ServiceAccount.Name = testOtherServiceAccountName
-			otherIdentity.Spec.Azure.FederatedIdentityCredentialName = testOtherFederatedCredential
-			Expect(k8sClient.Create(ctx, otherIdentity)).To(Succeed())
+			serviceAccount := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Labels: map[string]string{
+					serviceAccountManagedBy: serviceAccountManagerName,
+					serviceAccountUID:       string(identity.UID),
+					serviceAccountCreatedBy: trueValue,
+				},
+			}}
+			Expect(k8sClient.Create(ctx, serviceAccount)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{}
 			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(manager.deletes).To(Equal(1))
-			Expect(manager.options.PreserveResourceGroup).To(BeTrue())
-			Expect(manager.options.PreserveUserAssignedIdentity).To(BeTrue())
-			Expect(manager.options.ResourceGroupSuccessorUID).To(Equal(string(otherIdentity.UID)))
-			Expect(manager.options.UserAssignedIdentitySuccessorUID).To(Equal(string(otherIdentity.UID)))
+			Expect(manager.deletes).To(Equal(0))
+			Expect(k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{})).To(Succeed())
+			Eventually(func() bool {
+				return apierrors.IsNotFound(k8sClient.Get(ctx, identityKey, &workloadidentityv1alpha1.WorkloadIdentity{}))
+			}).Should(BeTrue())
 		})
 
-		It("preserves only the resource group when another WorkloadIdentity uses a different identity", func() {
-			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
-			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
-
-			otherIdentity := validWorkloadIdentity(otherIdentityKey.Name, otherIdentityKey.Namespace)
-			otherIdentity.Spec.ServiceAccount.Name = testOtherServiceAccountName
-			otherIdentity.Spec.Azure.UserAssignedIdentityName = "other-uami"
-			otherIdentity.Spec.Azure.FederatedIdentityCredentialName = testOtherFederatedCredential
-			Expect(k8sClient.Create(ctx, otherIdentity)).To(Succeed())
-
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-			options, waitForPeers, err := reconciler.workloadIdentityDeleteOptions(ctx, identity)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(waitForPeers).To(BeFalse())
-			Expect(options.PreserveResourceGroup).To(BeTrue())
-			Expect(options.PreserveUserAssignedIdentity).To(BeFalse())
-			Expect(options.ResourceGroupSuccessorUID).To(Equal(string(otherIdentity.UID)))
-			Expect(options.UserAssignedIdentitySuccessorUID).To(BeEmpty())
-		})
-
-		It("coordinates simultaneous shared-parent deletion through one finalizer", func() {
+		It("keeps the finalizer and ServiceAccount on an Azure ownership conflict during deletion", func() {
 			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
 			identity.Finalizers = []string{workloadIdentityFinalizer}
 			identity.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
-			otherIdentity := validWorkloadIdentity(otherIdentityKey.Name, otherIdentityKey.Namespace)
-			otherIdentity.Finalizers = []string{workloadIdentityFinalizer}
-			otherIdentity.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
-			otherIdentity.Spec.ServiceAccount.Name = testOtherServiceAccountName
-			otherIdentity.Spec.Azure.FederatedIdentityCredentialName = testOtherFederatedCredential
-			Expect(k8sClient.Create(ctx, otherIdentity)).To(Succeed())
+			serviceAccount := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Labels: map[string]string{
+					serviceAccountManagedBy: serviceAccountManagerName,
+					serviceAccountUID:       string(identity.UID),
+					serviceAccountCreatedBy: trueValue,
+				},
+			}}
+			Expect(k8sClient.Create(ctx, serviceAccount)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, otherIdentity)).To(Succeed())
-			Expect(k8sClient.Get(ctx, identityKey, identity)).To(Succeed())
-			Expect(k8sClient.Get(ctx, otherIdentityKey, otherIdentity)).To(Succeed())
 
-			manager := &fakeWorkloadIdentityManager{}
+			manager := &fakeWorkloadIdentityManager{err: workloadidentity.NewConflictError(
+				workloadidentity.ReasonAzureResourceOwnershipConflict,
+				"foreign identity owns Azure resources",
+			)}
 			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
-			coordinatorResult, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: otherIdentityKey})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(coordinatorResult.RequeueAfter).NotTo(BeZero())
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).To(MatchError(ContainSubstring("foreign identity")))
+			Expect(manager.deletes).To(Equal(1))
+
+			terminating := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, terminating)).To(Succeed())
+			Expect(terminating.Finalizers).To(ContainElement(workloadIdentityFinalizer))
+			Expect(k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{})).To(Succeed())
+		})
+
+		It("reports recovery without writes, then allows deletion while preserving resources", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			identity.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{err: workloadidentity.NewConflictError(
+				workloadidentity.ReasonRecoveryRequired,
+				"old UID owns Azure resources",
+			)}
+			recorder := events.NewFakeRecorder(1)
+			reconciler := &WorkloadIdentityReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Manager:  manager,
+				Recorder: recorder,
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).To(MatchError(ContainSubstring("old UID owns Azure resources")))
+			Expect(manager.ensures).To(Equal(1))
 			Expect(manager.deletes).To(Equal(0))
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{}))).To(BeTrue())
+
+			recovering := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, recovering)).To(Succeed())
+			condition := apimeta.FindStatusCondition(
+				recovering.Status.Conditions,
+				string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+			)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+			Expect(condition.Reason).To(Equal(workloadidentity.ReasonRecoveryRequired))
+			Expect(k8sClient.Delete(ctx, recovering)).To(Succeed())
 
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(manager.deletes).To(Equal(1))
-			Expect(manager.options.ResourceGroupSuccessorUID).To(Equal(string(otherIdentity.UID)))
-			Expect(manager.options.UserAssignedIdentitySuccessorUID).To(Equal(string(otherIdentity.UID)))
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{}))).To(BeTrue())
+			Eventually(recorder.Events).Should(Receive(ContainSubstring("Warning RecoveryRequired")))
 			Eventually(func() bool {
 				return apierrors.IsNotFound(k8sClient.Get(ctx, identityKey, &workloadidentityv1alpha1.WorkloadIdentity{}))
-			}).Should(BeTrue())
-			Expect(k8sClient.Get(ctx, otherIdentityKey, &workloadidentityv1alpha1.WorkloadIdentity{})).To(Succeed())
-
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: otherIdentityKey})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(manager.deletes).To(Equal(2))
-			Expect(manager.options.PreserveResourceGroup).To(BeFalse())
-			Expect(manager.options.PreserveUserAssignedIdentity).To(BeFalse())
-			Eventually(func() bool {
-				return apierrors.IsNotFound(k8sClient.Get(ctx, otherIdentityKey, &workloadidentityv1alpha1.WorkloadIdentity{}))
 			}).Should(BeTrue())
 		})
 	})
@@ -898,9 +952,6 @@ func validWorkloadIdentity(name, namespace string) *workloadidentityv1alpha1.Wor
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: workloadidentityv1alpha1.WorkloadIdentitySpec{
 			Azure: workloadidentityv1alpha1.AzureWorkloadIdentityConfig{
-				SubscriptionID:                  "00000000-0000-0000-0000-000000000000",
-				Location:                        "swedencentral",
-				ResourceGroupName:               "rg-wi-test",
 				UserAssignedIdentityName:        "uami-test",
 				FederatedIdentityCredentialName: "fic-test",
 			},

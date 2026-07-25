@@ -10,6 +10,7 @@ import (
 const (
 	ReasonAzureResourceOwnershipConflict      = "AzureResourceOwnershipConflict"
 	ReasonFederatedIdentityCredentialConflict = "FederatedIdentityCredentialConflict"
+	ReasonRecoveryRequired                    = "RecoveryRequired"
 )
 
 type ManagedIdentity struct {
@@ -17,13 +18,6 @@ type ManagedIdentity struct {
 	PrincipalID    string
 	TenantID       string
 	AzureResources []azworkloadidentityv1alpha1.AzureResource
-}
-
-type DeleteOptions struct {
-	PreserveResourceGroup            bool
-	PreserveUserAssignedIdentity     bool
-	ResourceGroupSuccessorUID        string
-	UserAssignedIdentitySuccessorUID string
 }
 
 type ConflictError struct {
@@ -53,9 +47,4 @@ func ConflictReason(err error) (string, bool) {
 type Manager interface {
 	Ensure(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, issuerURL, subject string) (ManagedIdentity, error)
 	Delete(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity) error
-}
-
-type DependencyAwareManager interface {
-	Manager
-	DeleteWithOptions(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, options DeleteOptions) error
 }
