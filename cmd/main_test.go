@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/azure"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/controller"
 )
 
@@ -59,4 +60,53 @@ func TestOIDCIssuerRefreshIntervalFlags(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAzureScopeFlagsAreRequiredAndProduceValidatedScope(t *testing.T) {
+	t.Run("defaults are rejected", func(t *testing.T) {
+		flags := flag.NewFlagSet(t.Name(), flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		var values azureScopeFlagValues
+		registerAzureScopeFlags(flags, &values)
+		if err := flags.Parse(nil); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := azure.NewScope(values.subscriptionID, values.resourceGroupName, values.location); err == nil {
+			t.Fatal("expected empty Azure scope flags to be rejected")
+		}
+	})
+
+	t.Run("configured values are accepted", func(t *testing.T) {
+		const (
+			subscriptionID    = "00000000-0000-0000-0000-000000000000"
+			resourceGroupName = "rg-platform"
+			location          = "swedencentral"
+		)
+		flags := flag.NewFlagSet(t.Name(), flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		var values azureScopeFlagValues
+		registerAzureScopeFlags(flags, &values)
+		err := flags.Parse([]string{
+			"--azure-subscription-id=" + subscriptionID,
+			"--azure-resource-group-name=" + resourceGroupName,
+			"--azure-location=" + location,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if values.subscriptionID != subscriptionID {
+			t.Fatalf("subscription ID = %q", values.subscriptionID)
+		}
+		if values.resourceGroupName != resourceGroupName {
+			t.Fatalf("resource group = %q", values.resourceGroupName)
+		}
+		if values.location != location {
+			t.Fatalf("location = %q", values.location)
+		}
+		if _, err := azure.NewScope(values.subscriptionID, values.resourceGroupName, values.location); err != nil {
+			t.Fatal(err)
+		}
+	})
 }

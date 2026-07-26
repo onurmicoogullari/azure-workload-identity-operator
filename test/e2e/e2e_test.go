@@ -30,6 +30,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 
 	testutil "github.com/onurmicoogullari/azure-workload-identity-operator/test/utils"
 )
@@ -45,6 +46,8 @@ const metricsServiceName = "azure-workload-identity-operator-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "azure-workload-identity-operator-metrics-binding"
+
+const e2eDeployConfig = "config/e2e"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -69,10 +72,57 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = testutil.RunInProject(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+		By("deploying the controller-manager with the e2e Azure scope overlay")
+		cmd = exec.Command(
+			"make",
+			"deploy",
+			fmt.Sprintf("IMG=%s", managerImage),
+			fmt.Sprintf("DEPLOY_CONFIG=%s", e2eDeployConfig),
+		)
 		_, err = testutil.RunInProject(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("verifying the rendered manager arguments")
+		cmd = exec.Command(
+			"kubectl",
+			"get",
+			"deployment",
+			"azure-workload-identity-operator-controller-manager",
+			"-n",
+			namespace,
+			"-o",
+			"json",
+		)
+		output, err := testutil.RunInProject(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to read the controller-manager Deployment")
+
+		var deployment appsv1.Deployment
+		Expect(json.Unmarshal([]byte(output), &deployment)).To(Succeed())
+
+		var args []string
+		for _, container := range deployment.Spec.Template.Spec.Containers {
+			if container.Name == "manager" {
+				args = container.Args
+				break
+			}
+		}
+		Expect(args).NotTo(BeNil(), "Manager container not found in controller-manager Deployment")
+		for _, expectedArg := range []string{
+			"--metrics-bind-address=:8443",
+			"--leader-elect",
+			"--health-probe-bind-address=:8081",
+			"--webhook-cert-path=/tmp/k8s-webhook-server/serving-certs",
+			"--azure-subscription-id=00000000-0000-0000-0000-000000000000",
+			"--azure-resource-group-name=rg-e2e-platform",
+			"--azure-location=swedencentral",
+		} {
+			Expect(countArgument(args, expectedArg)).To(
+				Equal(1),
+				"Expected manager argument %q exactly once; rendered arguments: %v",
+				expectedArg,
+				args,
+			)
+		}
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
@@ -83,7 +133,7 @@ var _ = Describe("Manager", Ordered, func() {
 		_, _ = testutil.RunInProject(cmd)
 
 		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
+		cmd = exec.Command("make", "undeploy", fmt.Sprintf("DEPLOY_CONFIG=%s", e2eDeployConfig))
 		_, _ = testutil.RunInProject(cmd)
 
 		By("uninstalling CRDs")
@@ -336,6 +386,16 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 })
 
+func countArgument(args []string, expected string) int {
+	count := 0
+	for _, arg := range args {
+		if arg == expected {
+			count++
+		}
+	}
+	return count
+}
+
 // serviceAccountToken returns a token for the specified service account in the given namespace.
 // It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
 // and parsing the resulting token from the API response.
@@ -421,9 +481,6 @@ metadata:
   name: default
 spec:
   azure:
-    subscriptionID: 00000000-0000-0000-0000-000000000000
-    location: swedencentral
-    resourceGroupName: rg-e2e-oidc
     storageAccountName: e2eoidcissuer123
     blobContainerName: oidc
   signingKey:
@@ -442,9 +499,6 @@ metadata:
   namespace: default
 spec:
   azure:
-    subscriptionID: 00000000-0000-0000-0000-000000000000
-    location: swedencentral
-    resourceGroupName: rg-e2e-workload
     userAssignedIdentityName: uami-e2e-workload
     federatedIdentityCredentialName: fic-e2e-workload
   serviceAccount:

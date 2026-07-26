@@ -22,6 +22,7 @@ const oidcIssuerUIDTag = "oidc-issuer-uid"
 type BlobOIDCDocumentPublisher struct {
 	Client     client.Client
 	Credential azcore.TokenCredential
+	Scope      Scope
 }
 
 type oidcDocuments struct {
@@ -37,8 +38,11 @@ func (p *BlobOIDCDocumentPublisher) Publish(ctx context.Context, issuer *azworkl
 	if p.Client == nil {
 		return oidc.PublishedDocuments{}, fmt.Errorf("kubernetes client is required")
 	}
+	if err := p.Scope.Validate(); err != nil {
+		return oidc.PublishedDocuments{}, fmt.Errorf("validate Azure scope: %w", err)
+	}
 
-	clients, err := newStorageClients(issuer.Spec.Azure.SubscriptionID, p.Credential)
+	clients, err := newStorageClients(p.Scope, p.Credential)
 	if err != nil {
 		return oidc.PublishedDocuments{}, err
 	}
@@ -125,59 +129,69 @@ func (p *BlobOIDCDocumentPublisher) Delete(ctx context.Context, issuer *azworklo
 	if p.Credential == nil {
 		return fmt.Errorf("azure credential is required")
 	}
+	if err := p.Scope.Validate(); err != nil {
+		return fmt.Errorf("validate Azure scope: %w", err)
+	}
 
-	clients, err := newStorageClients(issuer.Spec.Azure.SubscriptionID, p.Credential)
+	clients, err := newStorageClients(p.Scope, p.Credential)
 	if err != nil {
 		return err
 	}
 
 	az := issuer.Spec.Azure
-	storage, err := clients.storageAccounts.GetProperties(ctx, az.ResourceGroupName, az.StorageAccountName, nil)
+	storage, err := clients.storageAccounts.GetProperties(ctx, p.Scope.resourceGroupName, az.StorageAccountName, nil)
 	if isNotFound(err) {
-		return clients.deleteResourceGroupIfOwned(ctx, issuer)
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("get storage account before delete: %w", err)
 	}
 	if wasOIDCIssuerResourceCreatedByOperator(storage.Tags, issuer) {
-		_, err = clients.storageAccounts.Delete(ctx, az.ResourceGroupName, az.StorageAccountName, nil)
+		_, err = clients.storageAccounts.Delete(ctx, p.Scope.resourceGroupName, az.StorageAccountName, nil)
 		if err != nil && !isNotFound(err) {
 			return err
 		}
 	}
 
-	return clients.deleteResourceGroupIfOwned(ctx, issuer)
+	return nil
 }
 
 type storageClients struct {
-	resourceGroups  *armresources.ResourceGroupsClient
+	scope           Scope
+	resourceGroups  resourceGroupsClient
 	storageAccounts *armstorage.AccountsClient
 	blobContainers  *armstorage.BlobContainersClient
 	credential      azcore.TokenCredential
 }
 
-func newStorageClients(subscriptionID string, credential azcore.TokenCredential) (*storageClients, error) {
-	resourceGroups, err := armresources.NewResourceGroupsClient(subscriptionID, credential, nil)
+func newStorageClients(scope Scope, credential azcore.TokenCredential) (*storageClients, error) {
+	resourceGroups, err := armresources.NewResourceGroupsClient(scope.subscriptionID, credential, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create resource groups client: %w", err)
 	}
-	storageAccounts, err := armstorage.NewAccountsClient(subscriptionID, credential, nil)
+	storageAccounts, err := armstorage.NewAccountsClient(scope.subscriptionID, credential, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create storage accounts client: %w", err)
 	}
-	blobContainers, err := armstorage.NewBlobContainersClient(subscriptionID, credential, nil)
+	blobContainers, err := armstorage.NewBlobContainersClient(scope.subscriptionID, credential, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create blob containers client: %w", err)
 	}
 
-	return &storageClients{resourceGroups: resourceGroups, storageAccounts: storageAccounts, blobContainers: blobContainers, credential: credential}, nil
+	return &storageClients{
+		scope:           scope,
+		resourceGroups:  resourceGroups,
+		storageAccounts: storageAccounts,
+		blobContainers:  blobContainers,
+		credential:      credential,
+	}, nil
 }
 
 func (c *storageClients) ensureStorage(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer) ([]azworkloadidentityv1alpha1.AzureResource, error) {
 	az := issuer.Spec.Azure
 	resources := make([]azworkloadidentityv1alpha1.AzureResource, 0, 3)
 
-	rg, err := c.ensureResourceGroup(ctx, issuer)
+	rg, err := ensureResourceGroup(ctx, c.resourceGroups, c.scope)
 	if err != nil {
 		return nil, err
 	}
@@ -185,10 +199,10 @@ func (c *storageClients) ensureStorage(ctx context.Context, issuer *azworkloadid
 		resources = append(resources, azworkloadidentityv1alpha1.AzureResource{ID: *rg.ID, Kind: "ResourceGroup"})
 	}
 
-	storage, err := c.storageAccounts.GetProperties(ctx, az.ResourceGroupName, az.StorageAccountName, nil)
+	storage, err := c.storageAccounts.GetProperties(ctx, c.scope.resourceGroupName, az.StorageAccountName, nil)
 	if isNotFound(err) {
-		poller, createErr := c.storageAccounts.BeginCreate(ctx, az.ResourceGroupName, az.StorageAccountName, armstorage.AccountCreateParameters{
-			Location: to.Ptr(az.Location),
+		poller, createErr := c.storageAccounts.BeginCreate(ctx, c.scope.resourceGroupName, az.StorageAccountName, armstorage.AccountCreateParameters{
+			Location: to.Ptr(c.scope.location),
 			Kind:     to.Ptr(armstorage.KindStorageV2),
 			SKU:      &armstorage.SKU{Name: to.Ptr(armstorage.SKUNameStandardLRS)},
 			Properties: &armstorage.AccountPropertiesCreateParameters{
@@ -232,55 +246,6 @@ func (c *storageClients) ensureStorage(ctx context.Context, issuer *azworkloadid
 	return resources, nil
 }
 
-func (c *storageClients) ensureResourceGroup(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer) (armresources.ResourceGroup, error) {
-	az := issuer.Spec.Azure
-	rg, err := c.resourceGroups.Get(ctx, az.ResourceGroupName, nil)
-	if isNotFound(err) {
-		created, createErr := c.resourceGroups.CreateOrUpdate(ctx, az.ResourceGroupName, armresources.ResourceGroup{
-			Location: to.Ptr(az.Location),
-			Tags:     resourceTags(issuer, true),
-		}, nil)
-		if createErr != nil {
-			return armresources.ResourceGroup{}, fmt.Errorf("create resource group: %w", createErr)
-		}
-		return created.ResourceGroup, nil
-	}
-	if err != nil {
-		return armresources.ResourceGroup{}, fmt.Errorf("get resource group: %w", err)
-	}
-
-	created := wasOIDCIssuerResourceCreatedByOperator(rg.Tags, issuer)
-	updated, updateErr := c.resourceGroups.CreateOrUpdate(ctx, az.ResourceGroupName, armresources.ResourceGroup{
-		Location: rg.Location,
-		Tags:     mergeTags(rg.Tags, resourceTags(issuer, created)),
-	}, nil)
-	if updateErr != nil {
-		return armresources.ResourceGroup{}, fmt.Errorf("update resource group tags: %w", updateErr)
-	}
-	return updated.ResourceGroup, nil
-}
-
-func (c *storageClients) deleteResourceGroupIfOwned(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer) error {
-	az := issuer.Spec.Azure
-	rg, err := c.resourceGroups.Get(ctx, az.ResourceGroupName, nil)
-	if isNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("get resource group before delete: %w", err)
-	}
-	if !wasOIDCIssuerResourceCreatedByOperator(rg.Tags, issuer) {
-		return nil
-	}
-
-	poller, err := c.resourceGroups.BeginDelete(ctx, az.ResourceGroupName, nil)
-	if err != nil {
-		return fmt.Errorf("delete resource group: %w", err)
-	}
-	_, err = poller.PollUntilDone(ctx, nil)
-	return err
-}
-
 func (c *storageClients) convergeStorageAccount(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer, account armstorage.Account) (armstorage.Account, error) {
 	az := issuer.Spec.Azure
 	properties := account.Properties
@@ -306,7 +271,7 @@ func (c *storageClients) convergeStorageAccount(ctx context.Context, issuer *azw
 		return account, nil
 	}
 
-	updated, err := c.storageAccounts.Update(ctx, az.ResourceGroupName, az.StorageAccountName, armstorage.AccountUpdateParameters{
+	updated, err := c.storageAccounts.Update(ctx, c.scope.resourceGroupName, az.StorageAccountName, armstorage.AccountUpdateParameters{
 		Tags: mergeTags(account.Tags, desiredTags),
 		Properties: &armstorage.AccountPropertiesUpdateParameters{
 			AllowBlobPublicAccess:  to.Ptr(true),
@@ -323,9 +288,9 @@ func (c *storageClients) convergeStorageAccount(ctx context.Context, issuer *azw
 
 func (c *storageClients) ensureBlobContainer(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer) (armstorage.BlobContainer, error) {
 	az := issuer.Spec.Azure
-	container, err := c.blobContainers.Get(ctx, az.ResourceGroupName, az.StorageAccountName, az.BlobContainerName, nil)
+	container, err := c.blobContainers.Get(ctx, c.scope.resourceGroupName, az.StorageAccountName, az.BlobContainerName, nil)
 	if isNotFound(err) {
-		created, createErr := c.blobContainers.Create(ctx, az.ResourceGroupName, az.StorageAccountName, az.BlobContainerName, armstorage.BlobContainer{
+		created, createErr := c.blobContainers.Create(ctx, c.scope.resourceGroupName, az.StorageAccountName, az.BlobContainerName, armstorage.BlobContainer{
 			ContainerProperties: &armstorage.ContainerProperties{PublicAccess: to.Ptr(armstorage.PublicAccessBlob)},
 		}, nil)
 		if createErr != nil {
@@ -338,7 +303,7 @@ func (c *storageClients) ensureBlobContainer(ctx context.Context, issuer *azwork
 	}
 
 	if container.ContainerProperties == nil || container.ContainerProperties.PublicAccess == nil || *container.ContainerProperties.PublicAccess != armstorage.PublicAccessBlob {
-		updated, updateErr := c.blobContainers.Update(ctx, az.ResourceGroupName, az.StorageAccountName, az.BlobContainerName, armstorage.BlobContainer{
+		updated, updateErr := c.blobContainers.Update(ctx, c.scope.resourceGroupName, az.StorageAccountName, az.BlobContainerName, armstorage.BlobContainer{
 			ContainerProperties: &armstorage.ContainerProperties{PublicAccess: to.Ptr(armstorage.PublicAccessBlob)},
 		}, nil)
 		if updateErr != nil {

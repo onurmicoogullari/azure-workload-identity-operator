@@ -64,8 +64,7 @@ From the repository root:
 The script has defaults chosen to avoid common local name collisions:
 
 - Test namespace and service account: `azwi-crc-test`
-- OIDC issuer storage resource group: `rg-azwi-crc-storage-test`
-- WorkloadIdentity resource group: `rg-azwi-crc-wi-test`
+- Shared OIDC/WorkloadIdentity resource group: `rg-azwi-crc-platform-test`
 - Key Vault resource group: `rg-azwi-crc-kv-test`
 - Storage account: `stazwicrctest`
 - Key Vault: `kv-azwi-<HHMMSS>-<random>` unless `KEY_VAULT_NAME` is set
@@ -76,17 +75,18 @@ Run this for the full list of overrides:
 ./e2e/openshift/e2e-test.sh --help
 ```
 
-By default, the script expects the Azure resource groups to be absent at the
-start of the run. That is intentional: the test verifies that the operator can
-delete the OIDCIssuer and WorkloadIdentity groups it created, while the script
-creates and deletes the Key Vault group it owns.
+By default, the script expects both Azure resource groups to be absent at the
+start of the run. It passes the shared group name to the local operator through
+the required Azure startup flags, verifies that the operator creates the group,
+verifies that CR deletion never deletes it, and removes it manually during
+cleanup. The Key Vault group remains separately script-created and owned.
 
 ## What The Test Proves
 
 The test covers the full local integration path:
 
-1. The `OIDCIssuer` controller creates Azure issuer storage and publishes OIDC
-   discovery/JWKS documents.
+1. The `OIDCIssuer` controller creates the absent shared Azure resource group,
+   creates issuer storage in it, and publishes OIDC discovery/JWKS documents.
 2. Signing key rotation publishes both the active OpenShift signing key and a
    test-owned retiring signing key in `OIDCIssuer/default.status.signingKeys`
    and JWKS.
@@ -100,9 +100,10 @@ The test covers the full local integration path:
    the new issuer.
 6. The `WorkloadIdentity` controller creates a user-assigned managed identity,
    creates a federated identity credential, and creates the Kubernetes
-   ServiceAccount with `Created` provenance. The script recreates that
-   ServiceAccount with benign metadata drift and verifies the controller retains
-   its provenance, records the replacement UID, and repairs managed metadata.
+   ServiceAccount with `Created` provenance. The script briefly pauses the local
+   operator, recreates that ServiceAccount with benign metadata drift, then
+   resumes the operator and verifies it preserves logical `Created` provenance,
+   records the exact replacement UID, and repairs managed metadata.
 7. The Azure Workload Identity mutating webhook injects the projected token and
    Azure environment into the test Job.
 8. The test Job exchanges the OpenShift service-account token for Azure
@@ -114,16 +115,18 @@ The test covers the full local integration path:
    `WorkloadIdentity` still exists, before the resource enters deletion.
 11. After the `WorkloadIdentity` is deleted, the OIDCIssuer validating webhook
    rejects deletion while OpenShift still references the issuer URL.
-12. The script verifies WorkloadIdentity deletion removes the operator-created
-   ServiceAccount, performs the manual OpenShift service-account issuer handoff,
-   refreshes the OpenShift OAuth API server token, then deletes the `OIDCIssuer`
-   and verifies the operator removes the OIDCIssuer-created Azure resources.
+12. The script verifies WorkloadIdentity deletion removes the
+   namespace-qualified managed identity, Azure cascades deletion to its
+   federated credential, and the logically operator-created replacement
+   ServiceAccount is removed; performs the manual OpenShift service-account
+   issuer handoff; deletes the `OIDCIssuer` storage resources; and verifies the
+   operator retains the shared resource group for manual cleanup.
 
 ## What The Script Tests, Step By Step
 
 Script output is grouped under these numbered steps.
 
-1. Install Azure Workload Identity webhook.
+1. Verify the shared Azure resource group is absent and install Azure Workload Identity webhook.
 2. Patch webhook deployment for OpenShift UID/SCC compatibility.
 3. Install operator CRDs.
 4. Start the operator locally.
@@ -136,8 +139,8 @@ Script output is grouped under these numbered steps.
 11. Wait for OpenShift to use the new issuer and mint tokens with that `iss`.
 12. Replace the retiring key Secret only, then verify periodic refresh republishes it.
 13. Create Key Vault.
-14. Create `WorkloadIdentity`, recreate its ServiceAccount, and verify `Created` provenance, replacement UID tracking, and managed metadata repair.
-15. Verify conflict handling for ServiceAccount and federated credential conflicts.
+14. Create `WorkloadIdentity`, verify its configured ServiceAccount name is immutable, manually replace that ServiceAccount under the same name, and verify stable `Created` provenance, replacement UID tracking, managed metadata repair, and deletion.
+15. Verify conflict handling for ServiceAccount and Azure identity ownership conflicts.
 16. Upload a real Key Vault secret and assign read access.
 17. Build and run the OpenShift Job.
 18. Verify the Job reads the Key Vault secret using workload identity.
@@ -145,19 +148,19 @@ Script output is grouped under these numbered steps.
 20. Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.
 21. During cleanup, verify deletion is also rejected while OpenShift still references the issuer.
 22. Restore the OpenShift issuer, refresh the OAuth API server token, delete
-    resources, and verify Azure and operator-created ServiceAccount cleanup.
+    resources, verify the shared group was retained, and clean it up manually.
 
 ## Cleanup
 
-The script registers a cleanup trap. On exit it deletes resources it created and
-waits for the operator finalizers to finish:
+The script registers a cleanup trap. On exit it deletes test resources, assumes
+cleanup responsibility for the operator-created shared group, and waits for the
+operator finalizers to finish:
 
 - Test Job
 - `WorkloadIdentity` and verification that its operator-created ServiceAccount is deleted
 - `OIDCIssuer`
 - Key Vault Azure resource group
-- WorkloadIdentity Azure resource group
-- OIDCIssuer Azure resource group
+- Operator-created shared platform Azure resource group, deleted manually by the script after retention verification
 - Role assignments created by the script
 - OpenShift BuildConfig/ImageStream created for the reader app
 - Locally started operator process

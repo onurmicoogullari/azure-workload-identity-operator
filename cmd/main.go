@@ -73,6 +73,33 @@ func registerOIDCIssuerRefreshIntervalFlags(flags *flag.FlagSet, interval *time.
 		"How often to reconcile OIDCIssuer publishing, including signing keys, Azure storage resources, and OIDC documents.")
 }
 
+type azureScopeFlagValues struct {
+	subscriptionID    string
+	resourceGroupName string
+	location          string
+}
+
+func registerAzureScopeFlags(flags *flag.FlagSet, values *azureScopeFlagValues) {
+	flags.StringVar(
+		&values.subscriptionID,
+		"azure-subscription-id",
+		"",
+		"Required Azure subscription ID for all platform-owned resources.",
+	)
+	flags.StringVar(
+		&values.resourceGroupName,
+		"azure-resource-group-name",
+		"",
+		"Required shared Azure resource group for OIDC storage and user assigned managed identities.",
+	)
+	flags.StringVar(
+		&values.location,
+		"azure-location",
+		"",
+		"Required Azure location used when creating platform-owned resources.",
+	)
+}
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -84,6 +111,7 @@ func main() {
 	var enableHTTP2 bool
 	var oidcIssuerRefreshInterval time.Duration
 	var workloadIdentityRefreshInterval time.Duration
+	var azureScopeFlags azureScopeFlagValues
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -103,6 +131,7 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	registerOIDCIssuerRefreshIntervalFlags(flag.CommandLine, &oidcIssuerRefreshInterval)
+	registerAzureScopeFlags(flag.CommandLine, &azureScopeFlags)
 	flag.DurationVar(
 		&workloadIdentityRefreshInterval,
 		"workload-identity-refresh-interval",
@@ -117,6 +146,16 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	azureScope, err := azure.NewScope(
+		azureScopeFlags.subscriptionID,
+		azureScopeFlags.resourceGroupName,
+		azureScopeFlags.location,
+	)
+	if err != nil {
+		setupLog.Error(err, "Invalid Azure scope configuration")
+		os.Exit(1)
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -224,6 +263,7 @@ func main() {
 		Publisher: &azure.BlobOIDCDocumentPublisher{
 			Client:     mgr.GetClient(),
 			Credential: azureCredential,
+			Scope:      azureScope,
 		},
 		OpenShiftServiceAccountIssuer: openShiftServiceAccountIssuer,
 		ServiceAccountTokens:          serviceAccountTokens,
@@ -236,8 +276,10 @@ func main() {
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
 		RefreshInterval: workloadIdentityRefreshInterval,
+		Recorder:        mgr.GetEventRecorder("workloadidentity-controller"),
 		Manager: &azure.WorkloadIdentityManager{
 			Credential: azureCredential,
+			Scope:      azureScope,
 		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentity")

@@ -65,23 +65,6 @@ type OIDCIssuerSpec struct {
 }
 
 type AzureOIDCIssuerConfig struct {
-	// subscriptionID is the Azure subscription UUID containing issuer storage resources.
-	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
-	// +required
-	SubscriptionID string `json:"subscriptionID"`
-
-	// location is the Azure region for issuer storage resources.
-	// +kubebuilder:validation:MinLength=1
-	// +required
-	Location string `json:"location"`
-
-	// resourceGroupName is the Azure resource group containing issuer storage.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=90
-	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_().-]*[A-Za-z0-9_()-]$`
-	// +required
-	ResourceGroupName string `json:"resourceGroupName"`
-
 	// storageAccountName is the Azure Storage account that serves OIDC discovery documents.
 	// +kubebuilder:validation:MinLength=3
 	// +kubebuilder:validation:MaxLength=24

@@ -7,8 +7,18 @@ Install cert-manager in the target cluster before deploying this operator so
 the webhook serving certificate can be issued and the
 `ValidatingWebhookConfiguration` CA bundle can be injected.
 
+Configure the required platform-owned Azure scope by appending literal
+`--azure-subscription-id`, `--azure-resource-group-name`, and
+`--azure-location` arguments in an installation-specific Kustomize overlay.
+The committed manager base intentionally omits installation-specific Azure
+values; `config/e2e` demonstrates the overlay structure with non-production
+test values. These process-level settings are shared by every `OIDCIssuer` and
+`WorkloadIdentity` and are intentionally not configurable in individual custom
+resources. The manager rejects missing or invalid values before controllers
+start.
+
 ```bash
-make deploy IMG=<registry>/<image>:<tag>
+make deploy IMG=<registry>/<image>:<tag> DEPLOY_CONFIG=config/<installation-overlay>
 ```
 
 ## E2E Tests

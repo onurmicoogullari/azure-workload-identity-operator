@@ -7,9 +7,6 @@ metadata:
   name: workloadidentity-sample
 spec:
   azure:
-    subscriptionID: 00000000-0000-0000-0000-000000000000
-    location: swedencentral
-    resourceGroupName: rg-azwi-sample
     userAssignedIdentityName: uami-azwi-sample
     federatedIdentityCredentialName: fic-azwi-sample
   serviceAccount:

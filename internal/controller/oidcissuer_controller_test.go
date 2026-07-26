@@ -597,9 +597,6 @@ func validOIDCIssuer(name string) *workloadidentityv1alpha1.OIDCIssuer {
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: workloadidentityv1alpha1.OIDCIssuerSpec{
 			Azure: workloadidentityv1alpha1.AzureOIDCIssuerConfig{
-				SubscriptionID:     "00000000-0000-0000-0000-000000000000",
-				Location:           "swedencentral",
-				ResourceGroupName:  "rg-oidc-test",
 				StorageAccountName: "oidctest123",
 				BlobContainerName:  "oidc",
 			},

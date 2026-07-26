@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 )
 
 // nolint:unused
@@ -64,9 +65,34 @@ func (v *WorkloadIdentityValidator) ValidateCreate(ctx context.Context, obj *wor
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type WorkloadIdentity.
-func (v *WorkloadIdentityValidator) ValidateUpdate(ctx context.Context, _ *workloadidentityv1alpha1.WorkloadIdentity, newObj *workloadidentityv1alpha1.WorkloadIdentity) (admission.Warnings, error) {
+func (v *WorkloadIdentityValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *workloadidentityv1alpha1.WorkloadIdentity) (admission.Warnings, error) {
 	workloadidentitylog.Info("Validation for WorkloadIdentity upon update", "name", newObj.GetName(), "namespace", newObj.GetNamespace())
-	return nil, v.validate(ctx, newObj)
+	allErrs, err := v.validationErrors(ctx, newObj)
+	if err != nil {
+		return nil, err
+	}
+	if oldObj.Spec.Azure.UserAssignedIdentityName != newObj.Spec.Azure.UserAssignedIdentityName {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "azure", "userAssignedIdentityName"),
+			"field is immutable",
+		))
+	}
+	if oldObj.Spec.Azure.FederatedIdentityCredentialName != newObj.Spec.Azure.FederatedIdentityCredentialName {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "azure", "federatedIdentityCredentialName"),
+			"field is immutable",
+		))
+	}
+	if oldObj.Spec.ServiceAccount.Name != newObj.Spec.ServiceAccount.Name {
+		allErrs = append(allErrs, field.Forbidden(
+			field.NewPath("spec", "serviceAccount", "name"),
+			"field is immutable",
+		))
+	}
+	if len(allErrs) > 0 {
+		return nil, invalidWorkloadIdentity(newObj, allErrs)
+	}
+	return nil, nil
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type WorkloadIdentity.
@@ -75,16 +101,41 @@ func (v *WorkloadIdentityValidator) ValidateDelete(context.Context, *workloadide
 }
 
 func (v *WorkloadIdentityValidator) validate(ctx context.Context, obj *workloadidentityv1alpha1.WorkloadIdentity) error {
+	allErrs, err := v.validationErrors(ctx, obj)
+	if err != nil {
+		return err
+	}
+	if len(allErrs) > 0 {
+		return invalidWorkloadIdentity(obj, allErrs)
+	}
+	return nil
+}
+
+func (v *WorkloadIdentityValidator) validationErrors(
+	ctx context.Context,
+	obj *workloadidentityv1alpha1.WorkloadIdentity,
+) (field.ErrorList, error) {
 	if v.Client == nil {
-		return errors.New("WorkloadIdentity validator client is not configured")
+		return nil, errors.New("WorkloadIdentity validator client is not configured")
 	}
 
 	identities := &workloadidentityv1alpha1.WorkloadIdentityList{}
 	if err := v.Client.List(ctx, identities); err != nil {
-		return err
+		return nil, err
 	}
 
 	var allErrs field.ErrorList
+	resolvedName := workloadidentity.UserAssignedIdentityName(
+		obj.Namespace,
+		obj.Spec.Azure.UserAssignedIdentityName,
+	)
+	if err := workloadidentity.ValidateUserAssignedIdentityName(resolvedName); err != nil {
+		allErrs = append(allErrs, field.Invalid(
+			field.NewPath("spec", "azure", "userAssignedIdentityName"),
+			obj.Spec.Azure.UserAssignedIdentityName,
+			err.Error(),
+		))
+	}
 	for i := range identities.Items {
 		existing := &identities.Items[i]
 		if sameWorkloadIdentity(existing, obj) {
@@ -97,29 +148,28 @@ func (v *WorkloadIdentityValidator) validate(ctx context.Context, obj *workloadi
 				fmt.Sprintf("already referenced by WorkloadIdentity %s/%s", existing.Namespace, existing.Name),
 			))
 		}
-		if sameFederatedCredential(existing.Spec.Azure, obj.Spec.Azure) {
+		existingResolvedName := workloadidentity.UserAssignedIdentityName(
+			existing.Namespace,
+			existing.Spec.Azure.UserAssignedIdentityName,
+		)
+		if strings.EqualFold(existingResolvedName, resolvedName) {
 			allErrs = append(allErrs, field.Invalid(
-				field.NewPath("spec", "azure", "federatedIdentityCredentialName"),
-				obj.Spec.Azure.FederatedIdentityCredentialName,
-				fmt.Sprintf("Azure federated identity credential tuple already referenced by WorkloadIdentity %s/%s", existing.Namespace, existing.Name),
+				field.NewPath("spec", "azure", "userAssignedIdentityName"),
+				obj.Spec.Azure.UserAssignedIdentityName,
+				fmt.Sprintf(
+					"resolved Azure user assigned identity name %q is already referenced by WorkloadIdentity %s/%s",
+					resolvedName,
+					existing.Namespace,
+					existing.Name,
+				),
 			))
 		}
 	}
-	if len(allErrs) > 0 {
-		return invalidWorkloadIdentity(obj, allErrs)
-	}
-	return nil
+	return allErrs, nil
 }
 
 func sameWorkloadIdentity(a, b *workloadidentityv1alpha1.WorkloadIdentity) bool {
 	return a.Namespace == b.Namespace && a.Name == b.Name
-}
-
-func sameFederatedCredential(a, b workloadidentityv1alpha1.AzureWorkloadIdentityConfig) bool {
-	return strings.EqualFold(a.SubscriptionID, b.SubscriptionID) &&
-		strings.EqualFold(a.ResourceGroupName, b.ResourceGroupName) &&
-		strings.EqualFold(a.UserAssignedIdentityName, b.UserAssignedIdentityName) &&
-		strings.EqualFold(a.FederatedIdentityCredentialName, b.FederatedIdentityCredentialName)
 }
 
 func invalidWorkloadIdentity(obj *workloadidentityv1alpha1.WorkloadIdentity, errs field.ErrorList) error {

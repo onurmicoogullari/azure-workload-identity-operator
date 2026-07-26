@@ -1,0 +1,9 @@
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --azure-subscription-id=00000000-0000-0000-0000-000000000000
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --azure-resource-group-name=rg-e2e-platform
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --azure-location=swedencentral

@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,7 +31,6 @@ import (
 )
 
 const (
-	webhookSubscriptionID                = "00000000-0000-0000-0000-000000000000"
 	otherFederatedIdentityCredentialName = "fic-other-test"
 	otherServiceAccountName              = "other-service-account"
 )
@@ -42,15 +43,21 @@ var _ = Describe("WorkloadIdentity Webhook", func() {
 
 	BeforeEach(func() {
 		ensureWebhookNamespace("other")
+		ensureWebhookNamespace("team")
+		ensureWebhookNamespace("team-app")
 		deleteWebhookWorkloadIdentity(identityName, "default")
 		deleteWebhookWorkloadIdentity(duplicateIdentityName, "default")
 		deleteWebhookWorkloadIdentity(duplicateIdentityName, "other")
+		deleteWebhookWorkloadIdentity(identityName, "team")
+		deleteWebhookWorkloadIdentity(duplicateIdentityName, "team-app")
 	})
 
 	AfterEach(func() {
 		deleteWebhookWorkloadIdentity(identityName, "default")
 		deleteWebhookWorkloadIdentity(duplicateIdentityName, "default")
 		deleteWebhookWorkloadIdentity(duplicateIdentityName, "other")
+		deleteWebhookWorkloadIdentity(identityName, "team")
+		deleteWebhookWorkloadIdentity(duplicateIdentityName, "team-app")
 	})
 
 	Context("When creating WorkloadIdentity", func() {
@@ -83,7 +90,7 @@ var _ = Describe("WorkloadIdentity Webhook", func() {
 			Expect(k8sClient.Create(ctx, duplicate)).To(Succeed())
 		})
 
-		It("denies duplicate Azure federated credential tuples", func() {
+		It("denies duplicate resolved user assigned identity names", func() {
 			identity := validWebhookWorkloadIdentity(identityName, "default")
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 			duplicate := validWebhookWorkloadIdentity(duplicateIdentityName, "default")
@@ -93,39 +100,57 @@ var _ = Describe("WorkloadIdentity Webhook", func() {
 
 			Expect(err).To(HaveOccurred())
 			Expect(apierrors.IsInvalid(err)).To(BeTrue())
-			Expect(err.Error()).To(ContainSubstring("spec.azure.federatedIdentityCredentialName"))
-			Expect(err.Error()).To(ContainSubstring("Azure federated identity credential tuple already referenced"))
+			Expect(err.Error()).To(ContainSubstring("spec.azure.userAssignedIdentityName"))
+			Expect(err.Error()).To(ContainSubstring("resolved Azure user assigned identity name"))
 		})
 
-		It("denies duplicate Azure federated credential tuples across namespaces", func() {
-			identity := validWebhookWorkloadIdentity(identityName, "default")
+		It("denies colliding resolved user assigned identity names across namespaces", func() {
+			identity := validWebhookWorkloadIdentity(identityName, "team")
+			identity.Spec.Azure.UserAssignedIdentityName = "app-identity"
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
-			duplicate := validWebhookWorkloadIdentity(duplicateIdentityName, "other")
+			duplicate := validWebhookWorkloadIdentity(duplicateIdentityName, "team-app")
+			duplicate.Spec.Azure.UserAssignedIdentityName = "identity"
 
 			err := k8sClient.Create(ctx, duplicate)
 
 			Expect(err).To(HaveOccurred())
 			Expect(apierrors.IsInvalid(err)).To(BeTrue())
-			Expect(err.Error()).To(ContainSubstring("spec.azure.federatedIdentityCredentialName"))
-			Expect(err.Error()).To(ContainSubstring("Azure federated identity credential tuple already referenced"))
+			Expect(err.Error()).To(ContainSubstring(`"team-app-identity"`))
 		})
 
-		It("denies duplicate Azure federated credential tuples case-insensitively", func() {
+		It("denies duplicate resolved user assigned identity names case-insensitively", func() {
 			identity := validWebhookWorkloadIdentity(identityName, "default")
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 			duplicate := validWebhookWorkloadIdentity(duplicateIdentityName, "default")
 			duplicate.Spec.ServiceAccount.Name = otherServiceAccountName
-			duplicate.Spec.Azure.SubscriptionID = webhookSubscriptionID
-			duplicate.Spec.Azure.ResourceGroupName = "RG-WI-TEST"
 			duplicate.Spec.Azure.UserAssignedIdentityName = "UAMI-WI-TEST"
-			duplicate.Spec.Azure.FederatedIdentityCredentialName = "FIC-WI-TEST"
 
 			err := k8sClient.Create(ctx, duplicate)
 
 			Expect(err).To(HaveOccurred())
 			Expect(apierrors.IsInvalid(err)).To(BeTrue())
-			Expect(err.Error()).To(ContainSubstring("spec.azure.federatedIdentityCredentialName"))
-			Expect(err.Error()).To(ContainSubstring("Azure federated identity credential tuple already referenced"))
+			Expect(err.Error()).To(ContainSubstring("spec.azure.userAssignedIdentityName"))
+		})
+
+		It("allows the same federated credential name under distinct identities", func() {
+			identity := validWebhookWorkloadIdentity(identityName, "default")
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			duplicate := validWebhookWorkloadIdentity(duplicateIdentityName, "default")
+			duplicate.Spec.ServiceAccount.Name = otherServiceAccountName
+			duplicate.Spec.Azure.UserAssignedIdentityName = "other-identity"
+
+			Expect(k8sClient.Create(ctx, duplicate)).To(Succeed())
+		})
+
+		It("denies a suffix whose resolved identity name exceeds Azure length limits", func() {
+			identity := validWebhookWorkloadIdentity(identityName, "default")
+			identity.Spec.Azure.UserAssignedIdentityName = strings.Repeat("a", 121)
+
+			err := k8sClient.Create(ctx, identity)
+
+			Expect(err).To(HaveOccurred())
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("resolved user assigned identity name"))
 		})
 
 		It("denies invalid ServiceAccount names through CRD schema validation", func() {
@@ -152,24 +177,58 @@ var _ = Describe("WorkloadIdentity Webhook", func() {
 			Expect(k8sClient.Update(ctx, current)).To(Succeed())
 		})
 
-		It("denies updates that would duplicate another ServiceAccount reference", func() {
+		It("denies changing the ServiceAccount name through CRD schema validation", func() {
 			identity := validWebhookWorkloadIdentity(identityName, "default")
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
-			other := validWebhookWorkloadIdentity(duplicateIdentityName, "default")
-			other.Spec.ServiceAccount.Name = otherServiceAccountName
-			other.Spec.Azure.FederatedIdentityCredentialName = otherFederatedIdentityCredentialName
-			Expect(k8sClient.Create(ctx, other)).To(Succeed())
 
 			current := &workloadidentityv1alpha1.WorkloadIdentity{}
-			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: duplicateIdentityName, Namespace: "default"}, current)).To(Succeed())
-			current.Spec.ServiceAccount.Name = identity.Spec.ServiceAccount.Name
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(identity), current)).To(Succeed())
+			current.Spec.ServiceAccount.Name = otherServiceAccountName
 
 			err := k8sClient.Update(ctx, current)
-
-			Expect(err).To(HaveOccurred())
 			Expect(apierrors.IsInvalid(err)).To(BeTrue())
-			Expect(err.Error()).To(ContainSubstring("already referenced by WorkloadIdentity default/test-workload"))
+			Expect(err.Error()).To(ContainSubstring("field is immutable"))
 		})
+
+		It("denies changing the ServiceAccount name through programmatic validation", func() {
+			oldIdentity := validWebhookWorkloadIdentity(identityName, "default")
+			newIdentity := oldIdentity.DeepCopy()
+			newIdentity.Spec.ServiceAccount.Name = otherServiceAccountName
+			validator := &WorkloadIdentityValidator{Client: k8sClient}
+
+			_, err := validator.ValidateUpdate(ctx, oldIdentity, newIdentity)
+
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("spec.serviceAccount.name"))
+			Expect(err.Error()).To(ContainSubstring("field is immutable"))
+		})
+
+		It("denies changing the user assigned identity suffix", func() {
+			identity := validWebhookWorkloadIdentity(identityName, "default")
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+
+			current := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(identity), current)).To(Succeed())
+			current.Spec.Azure.UserAssignedIdentityName = "different"
+
+			err := k8sClient.Update(ctx, current)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("field is immutable"))
+		})
+
+		It("denies changing the federated credential name", func() {
+			identity := validWebhookWorkloadIdentity(identityName, "default")
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+
+			current := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(identity), current)).To(Succeed())
+			current.Spec.Azure.FederatedIdentityCredentialName = "different"
+
+			err := k8sClient.Update(ctx, current)
+			Expect(apierrors.IsInvalid(err)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("field is immutable"))
+		})
+
 	})
 })
 
@@ -178,9 +237,6 @@ func validWebhookWorkloadIdentity(name, namespace string) *workloadidentityv1alp
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: workloadidentityv1alpha1.WorkloadIdentitySpec{
 			Azure: workloadidentityv1alpha1.AzureWorkloadIdentityConfig{
-				SubscriptionID:                  webhookSubscriptionID,
-				Location:                        "swedencentral",
-				ResourceGroupName:               "rg-wi-test",
 				UserAssignedIdentityName:        "uami-wi-test",
 				FederatedIdentityCredentialName: "fic-wi-test",
 			},

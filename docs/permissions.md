@@ -8,9 +8,18 @@ The operator needs Azure Resource Manager permissions. `OIDCIssuer` also needs A
 
 ### Resource Management
 
-Required for reconciling `OIDCIssuer` Azure resources:
+The required `--azure-subscription-id`, `--azure-resource-group-name`, and
+`--azure-location` startup flags define one platform-owned scope shared by
+`OIDCIssuer` storage and all `WorkloadIdentity` managed identities. Supply the
+values as literal manager Deployment arguments through an
+installation-specific Kustomize overlay. The committed base intentionally
+omits these installation-specific values and fails startup validation until an
+installation supplies its Azure scope. The `config/e2e` overlay demonstrates
+the structure with non-production test values.
 
-- read/create/update/delete resource groups
+Required for reconciling the shared scope and `OIDCIssuer` Azure resources:
+
+- read/create resource groups
 - read/create/update/delete storage accounts
 - read/create/update/delete blob containers
 
@@ -18,13 +27,16 @@ If the resource group already exists, scope these permissions to that resource g
 
 If the resource group does not exist and the operator must create it, scope these permissions at the subscription level.
 
-Required for reconciling `WorkloadIdentity` Azure resources:
+Required for reconciling `WorkloadIdentity` Azure resources in the same group:
 
-- read/create/update/delete resource groups
 - read/create/update/delete user assigned managed identities
 - read/create/update/delete federated identity credentials
 
-If the resource group already exists, scope these permissions to that resource group. If the operator must create the resource group, scope resource group permissions at the subscription level.
+The operator creates the configured resource group if it is absent and accepts
+it unchanged if it already exists. It never tags, transfers ownership of, or
+deletes the shared resource group. If the group already exists, scope child
+resource permissions to it. If the operator must create it, grant only the
+required resource-group create/read actions at subscription scope.
 
 ### Blob Uploads
 
@@ -97,9 +109,9 @@ When `spec.deletionPolicy` is `Retain`, the operator removes its finalizer and l
 When `spec.deletionPolicy` is `Delete`, the operator:
 
 - deletes the storage account only if it was created by the operator
-- deletes the resource group only if it was created by the operator
 
 Blob containers are not deleted separately. They are removed when their operator-created storage account is deleted.
+The shared platform resource group is never deleted.
 
 The operator tracks created/adopted Azure resources using tags:
 
@@ -112,29 +124,58 @@ Azure resources have a tag limit. If an adopted resource already has too many ta
 
 ### WorkloadIdentity
 
-`WorkloadIdentity` reconciles periodically re-read the Azure resource group, user assigned managed identity, and federated identity credential, then repair authorized drift. The default base interval is 5 minutes and can be changed with `--workload-identity-refresh-interval`. Each resource receives stable jitter of up to 10% so reconciles do not all reach Azure simultaneously. When no drift exists, reconciliation performs Azure reads and updates the Kubernetes `status.lastReconciledTime`, but does not issue Azure writes. `lastReconciledTime` records reconciliation attempts, including attempts that result in `Ready=False`; use it together with the `Ready` condition and `observedGeneration`.
+`WorkloadIdentity` periodically re-reads the shared Azure resource group, user assigned managed identity, and federated identity credential, then repairs authorized federated credential drift. The default base interval is 5 minutes and can be changed with `--workload-identity-refresh-interval`. Each resource receives stable jitter of up to 10% so reconciles do not all reach Azure simultaneously. When no drift exists, reconciliation performs Azure reads and updates the Kubernetes `status.lastReconciledTime`, but does not issue Azure writes. `lastReconciledTime` records reconciliation attempts, including attempts that result in `Ready=False`; use it together with the `Ready` condition and `observedGeneration`.
 
 When `spec.deletionPolicy` is `Retain`, the operator removes its finalizer and leaves Azure resources and the ServiceAccount in place.
 
 When `spec.deletionPolicy` is `Delete`, the operator:
 
-- deletes the federated identity credential named in `spec.azure.federatedIdentityCredentialName` only while its parent user assigned managed identity is still owned by this `WorkloadIdentity`
-- deletes the user assigned managed identity only if it was created by the operator and no other `WorkloadIdentity` references it
-- deletes the resource group only if it was created by the operator and no other `WorkloadIdentity` references it
+- re-verifies complete user assigned managed identity ownership
+- deletes the operator-created user assigned managed identity
 - deletes the ServiceAccount only if it was created by the operator
 
-Federated identity credentials do not support tags. Resource groups and user assigned managed identities may be shared by multiple `WorkloadIdentity` resources, so repair and deletion authorization combines the credential's previously reconciled trust tuple or resource ID with the parent identity's client, principal, and tenant IDs recorded in status. If a user assigned identity is deleted and recreated at the same Azure resource ID, its identity properties change and the operator reports an ownership conflict instead of modifying the replacement.
+Federated identity credentials are child resources of a user assigned managed
+identity. After complete parent ownership verification, the operator deletes
+the identity and relies on Azure parent-resource deletion to remove its
+federated identity credentials.
 
-The operator tracks created/adopted `WorkloadIdentity` Azure resources using tags:
+The user assigned managed identity name resolves to
+`<namespace>-<spec.azure.userAssignedIdentityName>`. The suffix and federated
+credential name and `spec.serviceAccount.name` are immutable. Deleting and
+recreating the configured ServiceAccount under the same namespace and name
+remains supported. The resolved Azure name must be unique case-insensitively
+across all `WorkloadIdentity` resources.
+
+User assigned managed identities are exclusive and are never adopted, retagged,
+shared, or transferred. Before reconciling a federated credential, the operator
+requires every ownership tag from its initial identity read to match the
+current custom resource. The logical key is lowercase hexadecimal SHA-256 of
+`<namespace>/<WorkloadIdentity name>`.
+
+The Managed Identity API exposes only a `CreateOrUpdate` operation for UAMIs;
+it has no create-only request or resource ETag precondition. The supported
+operating model therefore requires the operator to be the only Azure writer
+creating or changing these deterministic UAMIs. This also applies to FIC and
+UAMI deletion, for which the API exposes no resource ETags. The operator
+does not perform additional ownership reads between the initial verified UAMI
+read and a federated credential write. External writers in this resource group
+would therefore violate the supported operating model.
+
+Newly created identities carry these ownership tags:
 
 - `managed-by=azure-workload-identity-operator`
 - `workload-identity-uid=<kubernetes-uid>`
-- `created-by-operator=true|false`
+- `workload-identity-key=<sha256-logical-key>`
+- `created-by-operator=true`
 - `operator-api-group=workloadidentity.azure.micosolutions.se`
 
-Azure ownership tags record which `WorkloadIdentity` currently carries deletion responsibility, but they do not make a resource group or user assigned identity exclusive. During deletion, the controller retains a resource group or user assigned identity while another `WorkloadIdentity` references it and transfers operator-created provenance to a deterministic surviving reference. If all references are terminating together, the lexicographically first reference keeps its finalizer until its peers disappear, then performs final cleanup. This lets the final referencing `WorkloadIdentity` delete operator-created shared parents safely.
-
-If the operator cannot authorize deletion of an existing user assigned identity or federated identity credential, it may transfer resource-group tracking to a surviving reference but clears operator-created deletion provenance. This prevents a later reconciliation from deleting the resource group and indirectly deleting the unauthorized child.
+An existing identity with the same logical key but an earlier Kubernetes UID
+sets `Ready=False` with reason `RecoveryRequired` and causes no UAMI, federated
+credential, or ServiceAccount writes. Deleting that recreated custom resource
+is allowed: the controller emits a warning and preserves all Azure and
+ServiceAccount resources. Any other ownership mismatch reports
+`AzureResourceOwnershipConflict` and performs no UAMI or federated credential
+writes.
 
 The operator tracks created/adopted ServiceAccounts using labels:
 
@@ -143,8 +184,23 @@ The operator tracks created/adopted ServiceAccounts using labels:
 - `workloadidentity.azure.micosolutions.se/workload-identity-uid=<WorkloadIdentity metadata.uid>`
 - `workloadidentity.azure.micosolutions.se/created-by-operator=true|false`
 
-The first successful relationship fixes the logical ServiceAccount provenance in `status.serviceAccountProvenance`: `Created` when the ServiceAccount was absent and the operator created it, or `Adopted` when it already existed. This value remains stable when a ServiceAccount is deleted and recreated under the same namespace and name. The labels mirror that persisted decision and are not the normal source of truth. If reconciliation is interrupted after ServiceAccount creation but before provenance is persisted, deletion uses `created-by-operator=true` together with a matching `workload-identity-uid` as a guarded crash-recovery fallback.
+The first successful relationship fixes the logical ServiceAccount provenance
+in `status.serviceAccountProvenance`: `Created` when the ServiceAccount was
+absent and the operator created it, or `Adopted` when it already existed. This
+value remains stable when a ServiceAccount is deleted and recreated under the
+same namespace and name. The labels mirror that persisted decision and are not
+the normal source of truth. If reconciliation is interrupted after
+ServiceAccount creation but before provenance is persisted, deletion uses
+`created-by-operator=true` together with a matching `workload-identity-uid` as
+a guarded crash-recovery fallback.
 
-Before the relationship is established, the operator adopts only a ServiceAccount without existing Azure client or tenant annotations. After establishment, the configured namespace and name identify the logical ServiceAccount: recreation does not change its provenance, and benign managed-label or annotation differences are repaired as drift. Ownership-label conflicts, such as a different `workload-identity-uid` or an operator-managed ServiceAccount without an owner UID, are rejected. With deletion policy `Delete`, a `Created` ServiceAccount is deleted and an `Adopted` ServiceAccount is retained.
+Before the relationship is established, the operator adopts only a
+ServiceAccount without existing Azure client or tenant annotations. After
+establishment, the configured namespace and name identify the logical
+ServiceAccount: recreation does not change its provenance, and managed-label or
+annotation differences are repaired as drift. Ownership-label conflicts, such
+as a different `workload-identity-uid` or an operator-managed ServiceAccount
+without an owner UID, are rejected. With deletion policy `Delete`, a `Created`
+ServiceAccount is deleted and an `Adopted` ServiceAccount is retained.
 
 The default manager RBAC grants ServiceAccount `get/list/watch/create/update/patch/delete`. It still does not grant Secret access.
