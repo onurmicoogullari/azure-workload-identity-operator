@@ -4,6 +4,7 @@
 resources:
 - bases/workloadidentity.azure.micosolutions.se_oidcissuers.yaml
 - bases/workloadidentity.azure.micosolutions.se_workloadidentities.yaml
+- bases/workloadidentity.azure.micosolutions.se_workloadidentityrecoveries.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

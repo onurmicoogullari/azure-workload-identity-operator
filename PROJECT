@@ -30,4 +30,15 @@ resources:
   kind: WorkloadIdentity
   path: github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: workloadidentity.azure.micosolutions.se
+  group: workloadidentity
+  kind: WorkloadIdentityRecovery
+  path: github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
 version: "3"

@@ -5,11 +5,13 @@ import (
 	"errors"
 
 	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const (
 	ReasonAzureResourceOwnershipConflict      = "AzureResourceOwnershipConflict"
 	ReasonFederatedIdentityCredentialConflict = "FederatedIdentityCredentialConflict"
+	ReasonRecoveryInProgress                  = "RecoveryInProgress"
 	ReasonRecoveryRequired                    = "RecoveryRequired"
 )
 
@@ -21,8 +23,9 @@ type ManagedIdentity struct {
 }
 
 type ConflictError struct {
-	Reason  string
-	Message string
+	Reason           string
+	Message          string
+	RecoveryRequired *RecoveryRequiredEvidence
 }
 
 func (e *ConflictError) Error() string {
@@ -36,12 +39,34 @@ func NewConflictError(reason, message string) error {
 	return &ConflictError{Reason: reason, Message: message}
 }
 
+type RecoveryRequiredEvidence struct {
+	PreviousWorkloadIdentityUID types.UID
+}
+
+func NewRecoveryRequiredError(message string, previousWorkloadIdentityUID types.UID) error {
+	return &ConflictError{
+		Reason:  ReasonRecoveryRequired,
+		Message: message,
+		RecoveryRequired: &RecoveryRequiredEvidence{
+			PreviousWorkloadIdentityUID: previousWorkloadIdentityUID,
+		},
+	}
+}
+
 func ConflictReason(err error) (string, bool) {
 	conflict := &ConflictError{}
 	if !errors.As(err, &conflict) {
 		return "", false
 	}
 	return conflict.Reason, true
+}
+
+func RecoveryRequiredDetails(err error) (RecoveryRequiredEvidence, bool) {
+	conflict := &ConflictError{}
+	if !errors.As(err, &conflict) || conflict.RecoveryRequired == nil {
+		return RecoveryRequiredEvidence{}, false
+	}
+	return *conflict.RecoveryRequired, true
 }
 
 type Manager interface {

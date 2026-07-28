@@ -1,7 +1,7 @@
 # OpenShift E2E Test
 
-This folder contains the OpenShift/CRC e2e target for the `OIDCIssuer` and
-`WorkloadIdentity` controllers.
+This folder contains the OpenShift/CRC e2e target for the `OIDCIssuer`,
+`WorkloadIdentity`, and `WorkloadIdentityRecovery` controllers.
 
 The test installs the pieces needed for a local OpenShift run, starts the
 operator locally, creates real Azure resources, proves Azure Workload Identity
@@ -111,11 +111,19 @@ The test covers the full local integration path:
 9. The WorkloadIdentity periodic reconcile notices a mutated Azure federated
    credential without a `WorkloadIdentity` spec change, then restores the
    expected issuer, subject, and audience.
-10. The OIDCIssuer validating webhook rejects deletion while the
+10. The script retains and recreates the `WorkloadIdentity`, verifies
+    `RecoveryRequired` publishes the exact previous UID, exercises recovery
+    admission constraints and immutable spec, then bypasses admission with a
+    duplicate-source recovery to verify the controller fails it terminally
+    without mutation. It also introduces a second FIC to prove preflight blocks
+    without mutation. After the extra FIC is removed, the original recovery
+    resumes, transfers UAMI and ServiceAccount ownership, read-verifies the FIC
+    tuple, and allows a new Job to read Key Vault.
+11. The OIDCIssuer validating webhook rejects deletion while the
    `WorkloadIdentity` still exists, before the resource enters deletion.
-11. After the `WorkloadIdentity` is deleted, the OIDCIssuer validating webhook
+12. After the `WorkloadIdentity` is deleted, the OIDCIssuer validating webhook
    rejects deletion while OpenShift still references the issuer URL.
-12. The script verifies WorkloadIdentity deletion removes the
+13. The script verifies WorkloadIdentity deletion removes the
    namespace-qualified managed identity, Azure cascades deletion to its
    federated credential, and the logically operator-created replacement
    ServiceAccount is removed; performs the manual OpenShift service-account
@@ -145,9 +153,14 @@ Script output is grouped under these numbered steps.
 17. Build and run the OpenShift Job.
 18. Verify the Job reads the Key Vault secret using workload identity.
 19. Mutate Azure federated credential and verify WorkloadIdentity periodic reconcile repairs it.
-20. Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.
-21. During cleanup, verify deletion is also rejected while OpenShift still references the issuer.
-22. Restore the OpenShift issuer, refresh the OAuth API server token, delete
+20. Retain and recreate `WorkloadIdentity`; verify controlled recovery admission,
+    immutable spec, cache-settled admission and controller duplicate-source
+    rejection, terminal condition consistency, blocked-without-mutation
+    behavior, same-object resume, forward-only commit checkpoint and fencing-tag
+    removal, ServiceAccount transfer, FIC tuple, and Key Vault access.
+21. Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.
+22. During cleanup, verify deletion is also rejected while OpenShift still references the issuer.
+23. Restore the OpenShift issuer, refresh the OAuth API server token, delete
     resources, verify the shared group was retained, and clean it up manually.
 
 ## Cleanup
@@ -157,6 +170,7 @@ cleanup responsibility for the operator-created shared group, and waits for the
 operator finalizers to finish:
 
 - Test Job
+- `WorkloadIdentityRecovery`, including forward completion when cleanup interrupts a started recovery
 - `WorkloadIdentity` and verification that its operator-created ServiceAccount is deleted
 - `OIDCIssuer`
 - Key Vault Azure resource group
@@ -180,8 +194,9 @@ verifies the OAuth APIs and related cluster operators are healthy, and finally
 deletes the `OIDCIssuer`.
 
 The OpenShift script runs the operator locally by default, so it exercises the
-local validating webhook endpoint directly for the deletion rejection check.
-The Kind e2e suite covers the deployed `ValidatingWebhookConfiguration` path.
+local validating webhook endpoints directly for OIDCIssuer deletion and
+WorkloadIdentityRecovery creation/deletion checks. The Kind e2e suite covers
+the deployed `ValidatingWebhookConfiguration` path.
 
 ## Files
 

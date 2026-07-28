@@ -45,3 +45,24 @@ webhooks:
     resources:
     - workloadidentities
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-workloadidentity-azure-micosolutions-se-v1alpha1-workloadidentityrecovery
+  failurePolicy: Fail
+  name: vworkloadidentityrecovery-v1alpha1.workloadidentity.azure.micosolutions.se
+  rules:
+  - apiGroups:
+    - workloadidentity.azure.micosolutions.se
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    - DELETE
+    resources:
+    - workloadidentityrecoveries
+  sideEffects: None

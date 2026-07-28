@@ -32,3 +32,8 @@ The local OpenShift/CRC e2e test lives in `e2e/openshift/`.
 See `e2e/README.md` for the e2e layout and
 `e2e/openshift/README.md` for OpenShift-specific prerequisites, behavior, and
 troubleshooting.
+
+## Operations
+
+- [Azure and Kubernetes permissions](docs/permissions.md)
+- [Controlled workload identity recovery](docs/recovery.md)

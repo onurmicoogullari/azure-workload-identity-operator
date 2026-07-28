@@ -215,6 +215,18 @@ spec:
                 description: principalID is the Azure User Assigned Managed Identity
                   principal ID.
                 type: string
+              recovery:
+                description: |-
+                  recovery contains the source identity evidence needed to recover an operator-created retained identity.
+                  It is present only while the WorkloadIdentity requires recovery.
+                properties:
+                  previousWorkloadIdentityUid:
+                    description: previousWorkloadIdentityUid is the UID recorded on
+                      the retained Azure identity.
+                    type: string
+                required:
+                - previousWorkloadIdentityUid
+                type: object
               serviceAccountProvenance:
                 description: |-
                   serviceAccountProvenance records whether the logical ServiceAccount was created or adopted when this

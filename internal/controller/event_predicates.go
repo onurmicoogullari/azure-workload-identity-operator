@@ -18,6 +18,8 @@ package controller
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -26,16 +28,113 @@ import (
 
 func primaryResourcePredicate() predicate.Predicate {
 	return predicate.Funcs{
+		UpdateFunc: primaryResourceUpdate,
+	}
+}
+
+func workloadIdentityPrimaryPredicate() predicate.Predicate {
+	return predicate.Funcs{
 		UpdateFunc: func(updateEvent event.UpdateEvent) bool {
-			if updateEvent.ObjectOld == nil || updateEvent.ObjectNew == nil {
-				return false
-			}
-			if updateEvent.ObjectOld.GetGeneration() != updateEvent.ObjectNew.GetGeneration() {
+			if primaryResourceUpdate(updateEvent) {
 				return true
 			}
-			return updateEvent.ObjectOld.GetDeletionTimestamp() == nil && updateEvent.ObjectNew.GetDeletionTimestamp() != nil
+			oldIdentity, oldOK := updateEvent.ObjectOld.(*azworkloadidentityv1alpha1.WorkloadIdentity)
+			newIdentity, newOK := updateEvent.ObjectNew.(*azworkloadidentityv1alpha1.WorkloadIdentity)
+			if !oldOK || !newOK {
+				return false
+			}
+			return workloadIdentityRecoveryWakeTransition(oldIdentity, newIdentity)
 		},
 	}
+}
+
+func workloadIdentityRecoveryTargetPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(updateEvent event.UpdateEvent) bool {
+			if primaryResourceUpdate(updateEvent) {
+				return true
+			}
+			oldIdentity, oldOK := updateEvent.ObjectOld.(*azworkloadidentityv1alpha1.WorkloadIdentity)
+			newIdentity, newOK := updateEvent.ObjectNew.(*azworkloadidentityv1alpha1.WorkloadIdentity)
+			if !oldOK || !newOK {
+				return false
+			}
+			return workloadIdentityRecoveryStateChanged(oldIdentity, newIdentity)
+		},
+	}
+}
+
+func workloadIdentityRecoveryStateChanged(
+	oldIdentity, newIdentity *azworkloadidentityv1alpha1.WorkloadIdentity,
+) bool {
+	oldPreviousUID := ""
+	if oldIdentity.Status.Recovery != nil {
+		oldPreviousUID = string(oldIdentity.Status.Recovery.PreviousWorkloadIdentityUID)
+	}
+	newPreviousUID := ""
+	if newIdentity.Status.Recovery != nil {
+		newPreviousUID = string(newIdentity.Status.Recovery.PreviousWorkloadIdentityUID)
+	}
+	if oldPreviousUID != newPreviousUID {
+		return true
+	}
+	if oldIdentity.Status.Recovery == nil && newIdentity.Status.Recovery == nil {
+		return false
+	}
+
+	oldReady := apimeta.FindStatusCondition(
+		oldIdentity.Status.Conditions,
+		string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
+	)
+	newReady := apimeta.FindStatusCondition(
+		newIdentity.Status.Conditions,
+		string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
+	)
+	if oldReady == nil || newReady == nil {
+		return oldReady != newReady
+	}
+	return oldReady.Status != newReady.Status ||
+		oldReady.Reason != newReady.Reason ||
+		oldReady.ObservedGeneration != newReady.ObservedGeneration
+}
+
+func workloadIdentityRecoveryWakeTransition(
+	oldIdentity, newIdentity *azworkloadidentityv1alpha1.WorkloadIdentity,
+) bool {
+	if !workloadIdentityRecoveryIsInProgress(oldIdentity) &&
+		workloadIdentityRecoveryIsInProgress(newIdentity) {
+		return true
+	}
+
+	oldReady := apimeta.FindStatusCondition(
+		oldIdentity.Status.Conditions,
+		string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
+	)
+	newReady := apimeta.FindStatusCondition(
+		newIdentity.Status.Conditions,
+		string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
+	)
+	if newReady == nil || newReady.Status != metav1.ConditionFalse {
+		return false
+	}
+	if oldReady != nil &&
+		oldReady.Status == newReady.Status &&
+		oldReady.Reason == newReady.Reason {
+		return false
+	}
+	return newReady.Reason == recoveryReasonCompleted ||
+		newReady.Reason == recoveryReasonCancelled
+}
+
+func primaryResourceUpdate(updateEvent event.UpdateEvent) bool {
+	if updateEvent.ObjectOld == nil || updateEvent.ObjectNew == nil {
+		return false
+	}
+	if updateEvent.ObjectOld.GetGeneration() != updateEvent.ObjectNew.GetGeneration() {
+		return true
+	}
+	return updateEvent.ObjectOld.GetDeletionTimestamp() == nil &&
+		updateEvent.ObjectNew.GetDeletionTimestamp() != nil
 }
 
 func createDeleteOnlyPredicate() predicate.Predicate {

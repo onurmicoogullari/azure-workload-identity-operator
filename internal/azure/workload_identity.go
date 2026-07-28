@@ -10,6 +10,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/msi/armmsi"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
+	"k8s.io/apimachinery/pkg/types"
 
 	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
@@ -22,6 +23,9 @@ const (
 	azureResourceKindFederatedIdentityCredential = "FederatedIdentityCredential"
 	workloadIdentityKeyTag                       = "workload-identity-key"
 	workloadIdentityUIDTag                       = "workload-identity-uid"
+	workloadIdentityRecoveryUIDTag               = "workload-identity-recovery-uid"
+	workloadIdentityRecoveryTargetUIDTag         = "workload-identity-recovery-target-uid"
+	workloadIdentityLastRecoveryUIDTag           = "workload-identity-last-recovery-uid"
 )
 
 type WorkloadIdentityManager struct {
@@ -29,23 +33,19 @@ type WorkloadIdentityManager struct {
 	Scope      Scope
 }
 
+func (m *WorkloadIdentityManager) clients() (*identityClients, error) {
+	return newIdentityClients(m.Scope, m.Credential)
+}
+
 func (m *WorkloadIdentityManager) Ensure(
 	ctx context.Context,
 	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
 	issuerURL, subject string,
 ) (workloadidentity.ManagedIdentity, error) {
-	if m.Credential == nil {
-		return workloadidentity.ManagedIdentity{}, fmt.Errorf("azure credential is required")
-	}
-	if err := m.Scope.Validate(); err != nil {
-		return workloadidentity.ManagedIdentity{}, fmt.Errorf("validate Azure scope: %w", err)
-	}
-
-	clients, err := newIdentityClients(m.Scope, m.Credential)
+	clients, err := m.clients()
 	if err != nil {
 		return workloadidentity.ManagedIdentity{}, err
 	}
-
 	return clients.ensure(ctx, identity, issuerURL, subject)
 }
 
@@ -53,29 +53,36 @@ func (m *WorkloadIdentityManager) Delete(
 	ctx context.Context,
 	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
 ) error {
-	if m.Credential == nil {
-		return fmt.Errorf("azure credential is required")
-	}
-	if err := m.Scope.Validate(); err != nil {
-		return fmt.Errorf("validate Azure scope: %w", err)
-	}
-
-	clients, err := newIdentityClients(m.Scope, m.Credential)
+	clients, err := m.clients()
 	if err != nil {
 		return err
 	}
 	return clients.delete(ctx, identity)
 }
 
+func (m *WorkloadIdentityManager) DetectRecovery(
+	ctx context.Context,
+	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
+) (workloadidentity.RecoveryRequiredEvidence, error) {
+	clients, err := m.clients()
+	if err != nil {
+		return workloadidentity.RecoveryRequiredEvidence{}, err
+	}
+	return clients.detectRecovery(ctx, identity)
+}
+
 type userAssignedIdentitiesClient interface {
 	Get(context.Context, string, string, *armmsi.UserAssignedIdentitiesClientGetOptions) (armmsi.UserAssignedIdentitiesClientGetResponse, error)
 	CreateOrUpdate(context.Context, string, string, armmsi.Identity, *armmsi.UserAssignedIdentitiesClientCreateOrUpdateOptions) (armmsi.UserAssignedIdentitiesClientCreateOrUpdateResponse, error)
+	Update(context.Context, string, string, armmsi.IdentityUpdate, *armmsi.UserAssignedIdentitiesClientUpdateOptions) (armmsi.UserAssignedIdentitiesClientUpdateResponse, error)
 	Delete(context.Context, string, string, *armmsi.UserAssignedIdentitiesClientDeleteOptions) (armmsi.UserAssignedIdentitiesClientDeleteResponse, error)
 }
 
 type federatedIdentityCredentialsClient interface {
 	Get(context.Context, string, string, string, *armmsi.FederatedIdentityCredentialsClientGetOptions) (armmsi.FederatedIdentityCredentialsClientGetResponse, error)
 	CreateOrUpdate(context.Context, string, string, string, armmsi.FederatedIdentityCredential, *armmsi.FederatedIdentityCredentialsClientCreateOrUpdateOptions) (armmsi.FederatedIdentityCredentialsClientCreateOrUpdateResponse, error)
+	Delete(context.Context, string, string, string, *armmsi.FederatedIdentityCredentialsClientDeleteOptions) (armmsi.FederatedIdentityCredentialsClientDeleteResponse, error)
+	List(context.Context, string, string) ([]armmsi.FederatedIdentityCredential, error)
 }
 
 type identityClients struct {
@@ -86,6 +93,12 @@ type identityClients struct {
 }
 
 func newIdentityClients(scope Scope, credential azcore.TokenCredential) (*identityClients, error) {
+	if credential == nil {
+		return nil, fmt.Errorf("azure credential is required")
+	}
+	if err := scope.Validate(); err != nil {
+		return nil, fmt.Errorf("validate Azure scope: %w", err)
+	}
 	resourceGroups, err := armresources.NewResourceGroupsClient(scope.subscriptionID, credential, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create resource groups client: %w", err)
@@ -94,9 +107,12 @@ func newIdentityClients(scope Scope, credential azcore.TokenCredential) (*identi
 	if err != nil {
 		return nil, fmt.Errorf("create user assigned identities client: %w", err)
 	}
-	federatedCredentials, err := armmsi.NewFederatedIdentityCredentialsClient(scope.subscriptionID, credential, nil)
+	federatedCredentialsClient, err := armmsi.NewFederatedIdentityCredentialsClient(scope.subscriptionID, credential, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create federated identity credentials client: %w", err)
+	}
+	federatedCredentials := &federatedIdentityCredentialsClientAdapter{
+		FederatedIdentityCredentialsClient: federatedCredentialsClient,
 	}
 
 	return &identityClients{
@@ -163,10 +179,7 @@ func (c *identityClients) ensureUserAssignedIdentity(
 	if isNotFound(err) {
 		if recordedID, recorded := recordedAzureResourceID(identity, azureResourceKindUserAssignedIdentity); recorded &&
 			strings.EqualFold(recordedID, desiredUserAssignedIdentityID(c.scope, identity)) {
-			return nil, armmsi.Identity{}, azureResourceOwnershipConflict(
-				azureResourceKindUserAssignedIdentity,
-				recordedID,
-			)
+			return nil, armmsi.Identity{}, userAssignedIdentityOwnershipConflict(recordedID)
 		}
 
 		created, createErr := c.identities.CreateOrUpdate(
@@ -331,26 +344,75 @@ func validateUserAssignedIdentityOwnership(
 	expected := workloadIdentityTags(identity)
 	logicalKey := tagValue(current.Tags, workloadIdentityKeyTag)
 	currentUID := tagValue(current.Tags, workloadIdentityUIDTag)
+	recoveryUID := tagValue(current.Tags, workloadIdentityRecoveryUIDTag)
+	recoveryTargetUID := tagValue(current.Tags, workloadIdentityRecoveryTargetUIDTag)
+	if recoveryUID != "" || recoveryTargetUID != "" {
+		if recoveryUID == "" || recoveryTargetUID == "" {
+			return userAssignedIdentityOwnershipConflict(stringValue(current.ID))
+		}
+		return workloadidentity.NewConflictError(
+			workloadidentity.ReasonRecoveryInProgress,
+			fmt.Sprintf(
+				"UserAssignedIdentity %q is being recovered for WorkloadIdentity UID %q",
+				userAssignedIdentityName(identity),
+				recoveryTargetUID,
+			),
+		)
+	}
+	sourceOwnershipTags := operatorOwnershipTags(workloadIdentityUIDTag, currentUID, true)
 	if logicalKey == *expected[workloadIdentityKeyTag] &&
 		currentUID != "" &&
-		currentUID != string(identity.UID) {
-		return workloadidentity.NewConflictError(
-			workloadidentity.ReasonRecoveryRequired,
+		currentUID != string(identity.UID) &&
+		hasTags(current.Tags, sourceOwnershipTags) {
+		return workloadidentity.NewRecoveryRequiredError(
 			fmt.Sprintf(
 				"UserAssignedIdentity %q belongs to an earlier instance of WorkloadIdentity %s/%s; recovery is required",
 				userAssignedIdentityName(identity),
 				identity.Namespace,
 				identity.Name,
 			),
+			types.UID(currentUID),
 		)
 	}
 	if !hasTags(current.Tags, expected) {
-		return azureResourceOwnershipConflict(
-			azureResourceKindUserAssignedIdentity,
-			stringValue(current.ID),
-		)
+		return userAssignedIdentityOwnershipConflict(stringValue(current.ID))
 	}
 	return nil
+}
+
+func (c *identityClients) detectRecovery(
+	ctx context.Context,
+	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
+) (workloadidentity.RecoveryRequiredEvidence, error) {
+	name := userAssignedIdentityName(identity)
+	if err := workloadidentity.ValidateUserAssignedIdentityName(name); err != nil {
+		return workloadidentity.RecoveryRequiredEvidence{}, fmt.Errorf(
+			"validate user assigned identity name: %w",
+			err,
+		)
+	}
+	response, err := c.identities.Get(ctx, c.scope.resourceGroupName, name, nil)
+	if err != nil {
+		return workloadidentity.RecoveryRequiredEvidence{}, fmt.Errorf(
+			"get user assigned identity for recovery detection: %w",
+			err,
+		)
+	}
+	if !strings.EqualFold(stringValue(response.ID), desiredUserAssignedIdentityID(c.scope, identity)) {
+		return workloadidentity.RecoveryRequiredEvidence{}, userAssignedIdentityOwnershipConflict(
+			stringValue(response.ID),
+		)
+	}
+	if err := validateUserAssignedIdentityOwnership(identity, response.Identity); err != nil {
+		if recovery, ok := workloadidentity.RecoveryRequiredDetails(err); ok {
+			return recovery, nil
+		}
+		return workloadidentity.RecoveryRequiredEvidence{}, err
+	}
+	return workloadidentity.RecoveryRequiredEvidence{}, workloadidentity.NewConflictError(
+		workloadidentity.ReasonAzureResourceOwnershipConflict,
+		fmt.Sprintf("UserAssignedIdentity %q does not require recovery", name),
+	)
 }
 
 func workloadIdentityTags(
@@ -394,13 +456,13 @@ func recordedAzureResourceID(
 	return "", false
 }
 
-func azureResourceOwnershipConflict(kind, id string) error {
+func userAssignedIdentityOwnershipConflict(id string) error {
 	if id == "" {
 		id = "<unknown>"
 	}
 	return workloadidentity.NewConflictError(
 		workloadidentity.ReasonAzureResourceOwnershipConflict,
-		fmt.Sprintf("%s %q is not owned by this WorkloadIdentity", kind, id),
+		fmt.Sprintf("%s %q is not owned by this WorkloadIdentity", azureResourceKindUserAssignedIdentity, id),
 	)
 }
 

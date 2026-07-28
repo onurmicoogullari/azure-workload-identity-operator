@@ -24,6 +24,9 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the azure-workload-identity-operator itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- workloadidentityrecovery_admin_role.yaml
+- workloadidentityrecovery_editor_role.yaml
+- workloadidentityrecovery_viewer_role.yaml
 - workloadidentity_admin_role.yaml
 - workloadidentity_editor_role.yaml
 - workloadidentity_viewer_role.yaml

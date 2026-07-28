@@ -146,10 +146,14 @@ recreating the configured ServiceAccount under the same namespace and name
 remains supported. The resolved Azure name must be unique case-insensitively
 across all `WorkloadIdentity` resources.
 
-User assigned managed identities are exclusive and are never adopted, retagged,
-shared, or transferred. Before reconciling a federated credential, the operator
-requires every ownership tag from its initial identity read to match the
-current custom resource. The logical key is lowercase hexadecimal SHA-256 of
+User assigned managed identities are exclusive and are never arbitrarily
+adopted or shared. Normal reconciliation never retags or transfers one. The
+separate, cluster-scoped `WorkloadIdentityRecovery` API can transfer an
+operator-created retained identity only after exact source and target
+verification; see [Controlled Workload Identity Recovery](recovery.md). Before
+normal reconciliation changes a federated credential, the operator requires
+every ownership tag from its initial identity read to match the current custom
+resource. The logical key is lowercase hexadecimal SHA-256 of
 `<namespace>/<WorkloadIdentity name>`.
 
 The Managed Identity API exposes only a `CreateOrUpdate` operation for UAMIs;
@@ -176,6 +180,15 @@ is allowed: the controller emits a warning and preserves all Azure and
 ServiceAccount resources. Any other ownership mismatch reports
 `AzureResourceOwnershipConflict` and performs no UAMI or federated credential
 writes.
+
+While controlled recovery is active, the UAMI also carries
+`workload-identity-recovery-uid` and
+`workload-identity-recovery-target-uid` fencing tags. Normal reconciliation
+reports `RecoveryInProgress` and does not mutate Azure. A successful recovery
+sets `workload-identity-last-recovery-uid` and changes
+`workload-identity-uid` while retaining the in-progress tags. The operator
+removes those tags only after the ownership commit is durably checkpointed in
+Kubernetes.
 
 The operator tracks created/adopted ServiceAccounts using labels:
 

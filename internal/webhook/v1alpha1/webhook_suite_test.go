@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -109,10 +110,16 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
+	err = workloadidentity.IndexRecoveriesByPreviousWorkloadIdentityUID(ctx, mgr.GetFieldIndexer())
+	Expect(err).NotTo(HaveOccurred())
+
 	err = SetupOIDCIssuerWebhookWithManager(mgr, nil, nil)
 	Expect(err).NotTo(HaveOccurred())
 
 	err = SetupWorkloadIdentityWebhookWithManager(mgr)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = SetupWorkloadIdentityRecoveryWebhookWithManager(mgr)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook

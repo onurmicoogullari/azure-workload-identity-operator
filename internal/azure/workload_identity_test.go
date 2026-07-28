@@ -46,6 +46,13 @@ func TestValidateUserAssignedIdentityOwnershipDistinguishesRecovery(t *testing.T
 		Tags: foreignTags,
 	})
 	assertConflictReason(t, err, workloadidentity.ReasonAzureResourceOwnershipConflict)
+
+	missingOperatorMarker := withTag(recreatedTags, createdByOperatorTag, "false")
+	err = validateUserAssignedIdentityOwnership(identity, armmsi.Identity{
+		ID:   to.Ptr(testUAMIID),
+		Tags: missingOperatorMarker,
+	})
+	assertConflictReason(t, err, workloadidentity.ReasonAzureResourceOwnershipConflict)
 }
 
 func TestValidateFederatedIdentityCredentialRequiresExactTuple(t *testing.T) {

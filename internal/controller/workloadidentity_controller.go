@@ -47,6 +47,7 @@ const (
 	workloadIdentityFinalizer               = "workloadidentity.azure.micosolutions.se/workloadidentity-finalizer"
 	workloadIdentityServiceAccountNameIndex = "workloadidentity.spec.serviceAccount.name"
 	workloadIdentityUIDIndex                = "workloadidentity.metadata.uid"
+	workloadIdentityRecoveryPollInterval    = 5 * time.Second
 )
 
 const (
@@ -66,10 +67,11 @@ const (
 // WorkloadIdentityReconciler reconciles a WorkloadIdentity object.
 type WorkloadIdentityReconciler struct {
 	client.Client
-	Scheme          *runtime.Scheme
-	Manager         workloadidentity.Manager
-	Recorder        events.EventRecorder
-	RefreshInterval time.Duration
+	Scheme           *runtime.Scheme
+	Manager          workloadidentity.Manager
+	RecoveryDetector workloadidentity.RecoveryDetector
+	Recorder         events.EventRecorder
+	RefreshInterval  time.Duration
 }
 
 // +kubebuilder:rbac:groups=workloadidentity.azure.micosolutions.se,resources=workloadidentities,verbs=get;list;watch;create;update;patch;delete
@@ -101,15 +103,29 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
+	if workloadIdentityRecoveryIsInProgress(identity) {
+		return ctrl.Result{RequeueAfter: workloadIdentityRecoveryPollInterval}, nil
+	}
+
 	issuer := &azworkloadidentityv1alpha1.OIDCIssuer{}
 	if err := r.Get(ctx, types.NamespacedName{Name: azworkloadidentityv1alpha1.OIDCIssuerName}, issuer); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, r.setWorkloadIdentityNotReady(ctx, identity, "OIDCIssuerNotFound", fmt.Sprintf("OIDCIssuer %q was not found", azworkloadidentityv1alpha1.OIDCIssuerName))
+			return r.waitForOIDCIssuer(
+				ctx,
+				identity,
+				"OIDCIssuerNotFound",
+				fmt.Sprintf("OIDCIssuer %q was not found", azworkloadidentityv1alpha1.OIDCIssuerName),
+			)
 		}
 		return ctrl.Result{}, err
 	}
 	if !isOIDCIssuerReady(issuer) {
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.setWorkloadIdentityNotReady(ctx, identity, "OIDCIssuerNotReady", fmt.Sprintf("OIDCIssuer %q is not ready", azworkloadidentityv1alpha1.OIDCIssuerName))
+		return r.waitForOIDCIssuer(
+			ctx,
+			identity,
+			"OIDCIssuerNotReady",
+			fmt.Sprintf("OIDCIssuer %q is not ready", azworkloadidentityv1alpha1.OIDCIssuerName),
+		)
 	}
 
 	if r.Manager == nil {
@@ -119,6 +135,29 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	serviceAccountState, err := r.inspectServiceAccount(ctx, identity)
 	if err != nil {
 		log.Error(err, "Failed to validate existing ServiceAccount")
+		if conflictUID, ok := serviceAccountConflictOwnerUID(err); ok && r.RecoveryDetector != nil {
+			evidence, detectionErr := r.RecoveryDetector.DetectRecovery(ctx, identity)
+			if detectionErr == nil && evidence.PreviousWorkloadIdentityUID == types.UID(conflictUID) {
+				message := fmt.Sprintf(
+					"WorkloadIdentity %s/%s and ServiceAccount %s/%s belong to earlier WorkloadIdentity UID %q; recovery is required",
+					identity.Namespace,
+					identity.Name,
+					identity.Namespace,
+					identity.Spec.ServiceAccount.Name,
+					conflictUID,
+				)
+				return ctrl.Result{}, r.setWorkloadIdentityRecoveryRequired(ctx, identity, evidence, message)
+			}
+			if reason, ok := workloadidentity.ConflictReason(detectionErr); ok &&
+				reason == workloadidentity.ReasonRecoveryInProgress {
+				return ctrl.Result{RequeueAfter: workloadIdentityRecoveryPollInterval}, r.setWorkloadIdentityNotReady(
+					ctx,
+					identity,
+					workloadidentity.ReasonRecoveryInProgress,
+					detectionErr.Error(),
+				)
+			}
+		}
 		reason := "ServiceAccountReadFailed"
 		if isServiceAccountConflict(err) {
 			reason = "ServiceAccountConflict"
@@ -133,16 +172,7 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	subject := serviceAccountSubject(identity)
 	managed, err := r.Manager.Ensure(ctx, identity, issuer.Status.IssuerURL, subject)
 	if err != nil {
-		log.Error(err, "Failed to ensure Azure workload identity")
-		reason := "AzureEnsureFailed"
-		if conflictReason, ok := workloadidentity.ConflictReason(err); ok {
-			reason = conflictReason
-		}
-		statusErr := r.setWorkloadIdentityNotReady(ctx, identity, reason, err.Error())
-		if statusErr != nil {
-			return ctrl.Result{}, statusErr
-		}
-		return ctrl.Result{}, err
+		return r.handleWorkloadIdentityEnsureError(ctx, identity, err)
 	}
 
 	serviceAccount, serviceAccountProvenance, err := r.ensureServiceAccount(ctx, identity, managed, serviceAccountState)
@@ -164,6 +194,53 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	return ctrl.Result{RequeueAfter: r.refreshInterval(identity)}, nil
+}
+
+func (r *WorkloadIdentityReconciler) waitForOIDCIssuer(
+	ctx context.Context,
+	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
+	reason, message string,
+) (ctrl.Result, error) {
+	result := ctrl.Result{RequeueAfter: 30 * time.Second}
+	if workloadIdentityRecoveryStateIsActive(identity) {
+		return result, nil
+	}
+	return result, r.setWorkloadIdentityNotReady(ctx, identity, reason, message)
+}
+
+func (r *WorkloadIdentityReconciler) handleWorkloadIdentityEnsureError(
+	ctx context.Context,
+	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
+	err error,
+) (ctrl.Result, error) {
+	if evidence, ok := workloadidentity.RecoveryRequiredDetails(err); ok {
+		if statusErr := r.setWorkloadIdentityRecoveryRequired(ctx, identity, evidence, err.Error()); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{RequeueAfter: r.refreshInterval(identity)}, nil
+	}
+	if conflictReason, ok := workloadidentity.ConflictReason(err); ok &&
+		conflictReason == workloadidentity.ReasonRecoveryInProgress {
+		if statusErr := r.setWorkloadIdentityNotReady(
+			ctx,
+			identity,
+			workloadidentity.ReasonRecoveryInProgress,
+			err.Error(),
+		); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		return ctrl.Result{RequeueAfter: workloadIdentityRecoveryPollInterval}, nil
+	}
+
+	logf.FromContext(ctx).Error(err, "Failed to ensure Azure workload identity")
+	reason := "AzureEnsureFailed"
+	if conflictReason, ok := workloadidentity.ConflictReason(err); ok {
+		reason = conflictReason
+	}
+	if statusErr := r.setWorkloadIdentityNotReady(ctx, identity, reason, err.Error()); statusErr != nil {
+		return ctrl.Result{}, statusErr
+	}
+	return ctrl.Result{}, err
 }
 
 func (r *WorkloadIdentityReconciler) refreshInterval(identity *azworkloadidentityv1alpha1.WorkloadIdentity) time.Duration {
@@ -192,6 +269,9 @@ func (r *WorkloadIdentityReconciler) reconcileWorkloadIdentityDelete(ctx context
 	if !controllerutil.ContainsFinalizer(identity, workloadIdentityFinalizer) {
 		return ctrl.Result{}, nil
 	}
+	if workloadIdentityRecoveryIsInProgress(identity) {
+		return ctrl.Result{RequeueAfter: workloadIdentityRecoveryPollInterval}, nil
+	}
 
 	if identity.Spec.DeletionPolicy == azworkloadidentityv1alpha1.DeletionPolicyDelete {
 		if r.Manager == nil {
@@ -214,6 +294,36 @@ func (r *WorkloadIdentityReconciler) reconcileWorkloadIdentityDelete(ctx context
 
 	controllerutil.RemoveFinalizer(identity, workloadIdentityFinalizer)
 	return ctrl.Result{}, r.Update(ctx, identity)
+}
+
+func workloadIdentityRecoveryIsInProgress(
+	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
+) bool {
+	return workloadIdentityRecoveryReason(identity) == workloadidentity.ReasonRecoveryInProgress
+}
+
+func workloadIdentityRecoveryStateIsActive(
+	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
+) bool {
+	reason := workloadIdentityRecoveryReason(identity)
+	return reason == workloadidentity.ReasonRecoveryRequired ||
+		reason == workloadidentity.ReasonRecoveryInProgress
+}
+
+func workloadIdentityRecoveryReason(
+	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
+) string {
+	if identity.Status.Recovery == nil {
+		return ""
+	}
+	ready := apimeta.FindStatusCondition(
+		identity.Status.Conditions,
+		string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
+	)
+	if ready == nil || ready.Status != metav1.ConditionFalse {
+		return ""
+	}
+	return ready.Reason
 }
 
 func (r *WorkloadIdentityReconciler) emitRecoveryRequiredDeletionWarning(
@@ -325,7 +435,8 @@ func (r *WorkloadIdentityReconciler) inspectServiceAccount(ctx context.Context, 
 }
 
 type serviceAccountConflictError struct {
-	message string
+	message  string
+	ownerUID string
 }
 
 func (e *serviceAccountConflictError) Error() string {
@@ -336,15 +447,31 @@ func newServiceAccountConflict(format string, args ...any) error {
 	return &serviceAccountConflictError{message: fmt.Sprintf(format, args...)}
 }
 
+func newServiceAccountOwnerConflict(ownerUID, format string, args ...any) error {
+	return &serviceAccountConflictError{
+		message:  fmt.Sprintf(format, args...),
+		ownerUID: ownerUID,
+	}
+}
+
 func isServiceAccountConflict(err error) bool {
 	conflict := &serviceAccountConflictError{}
 	return errors.As(err, &conflict)
 }
 
+func serviceAccountConflictOwnerUID(err error) (string, bool) {
+	conflict := &serviceAccountConflictError{}
+	if !errors.As(err, &conflict) || conflict.ownerUID == "" {
+		return "", false
+	}
+	return conflict.ownerUID, true
+}
+
 func validateServiceAccountOwnership(identity *azworkloadidentityv1alpha1.WorkloadIdentity, serviceAccount *corev1.ServiceAccount) error {
 	ownerUID := serviceAccount.Labels[serviceAccountUID]
 	if ownerUID != "" && ownerUID != string(identity.UID) {
-		return newServiceAccountConflict(
+		return newServiceAccountOwnerConflict(
+			ownerUID,
 			"ServiceAccount %q is already managed by another WorkloadIdentity",
 			client.ObjectKeyFromObject(serviceAccount).String(),
 		)
@@ -433,6 +560,7 @@ func (r *WorkloadIdentityReconciler) setWorkloadIdentityReady(ctx context.Contex
 		status.ServiceAccountUID = serviceAccountUID
 		status.ServiceAccountProvenance = serviceAccountProvenance
 		status.AzureResources = managed.AzureResources
+		status.Recovery = nil
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
 			Status:             metav1.ConditionTrue,
@@ -445,10 +573,33 @@ func (r *WorkloadIdentityReconciler) setWorkloadIdentityReady(ctx context.Contex
 
 func (r *WorkloadIdentityReconciler) setWorkloadIdentityNotReady(ctx context.Context, identity *azworkloadidentityv1alpha1.WorkloadIdentity, reason, message string) error {
 	return r.patchWorkloadIdentityStatus(ctx, identity, func(status *azworkloadidentityv1alpha1.WorkloadIdentityStatus) {
+		if reason != workloadidentity.ReasonRecoveryInProgress {
+			status.Recovery = nil
+		}
 		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
 			Type:               string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
 			Status:             metav1.ConditionFalse,
 			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: identity.Generation,
+		})
+	})
+}
+
+func (r *WorkloadIdentityReconciler) setWorkloadIdentityRecoveryRequired(
+	ctx context.Context,
+	identity *azworkloadidentityv1alpha1.WorkloadIdentity,
+	evidence workloadidentity.RecoveryRequiredEvidence,
+	message string,
+) error {
+	return r.patchWorkloadIdentityStatus(ctx, identity, func(status *azworkloadidentityv1alpha1.WorkloadIdentityStatus) {
+		status.Recovery = &azworkloadidentityv1alpha1.WorkloadIdentityRecoveryRequiredStatus{
+			PreviousWorkloadIdentityUID: evidence.PreviousWorkloadIdentityUID,
+		}
+		apimeta.SetStatusCondition(&status.Conditions, metav1.Condition{
+			Type:               string(azworkloadidentityv1alpha1.WorkloadIdentityConditionReady),
+			Status:             metav1.ConditionFalse,
+			Reason:             workloadidentity.ReasonRecoveryRequired,
 			Message:            message,
 			ObservedGeneration: identity.Generation,
 		})
@@ -461,7 +612,11 @@ func (r *WorkloadIdentityReconciler) patchWorkloadIdentityStatus(ctx context.Con
 	identity.Status.ObservedGeneration = identity.Generation
 	identity.Status.LastReconciledTime = &now
 	mutate(&identity.Status)
-	return r.Status().Patch(ctx, identity, client.MergeFrom(original))
+	return r.Status().Patch(
+		ctx,
+		identity,
+		client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}),
+	)
 }
 
 func isOIDCIssuerReady(issuer *azworkloadidentityv1alpha1.OIDCIssuer) bool {
@@ -574,7 +729,7 @@ func (r *WorkloadIdentityReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&azworkloadidentityv1alpha1.WorkloadIdentity{}, builder.WithPredicates(primaryResourcePredicate())).
+		For(&azworkloadidentityv1alpha1.WorkloadIdentity{}, builder.WithPredicates(workloadIdentityPrimaryPredicate())).
 		Watches(&azworkloadidentityv1alpha1.OIDCIssuer{}, handler.EnqueueRequestsFromMapFunc(r.workloadIdentitiesForOIDCIssuer), builder.WithPredicates(oidcIssuerDependencyPredicate())).
 		Watches(&corev1.ServiceAccount{}, handler.EnqueueRequestsFromMapFunc(r.workloadIdentitiesForServiceAccount), builder.WithPredicates(serviceAccountDependencyPredicate())).
 		Named("workloadidentity").
