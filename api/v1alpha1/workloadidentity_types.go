@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 type WorkloadIdentityConditionType string
@@ -116,6 +117,11 @@ type WorkloadIdentityStatus struct {
 	// +optional
 	ServiceAccountProvenance ServiceAccountProvenance `json:"serviceAccountProvenance,omitempty"`
 
+	// recovery contains the source identity evidence needed to recover an operator-created retained identity.
+	// It is present only while the WorkloadIdentity requires recovery.
+	// +optional
+	Recovery *WorkloadIdentityRecoveryRequiredStatus `json:"recovery,omitempty"`
+
 	// observedGeneration is the latest generation reconciled by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -135,6 +141,14 @@ type WorkloadIdentityStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// WorkloadIdentityRecoveryRequiredStatus identifies the earlier WorkloadIdentity instance
+// that owns the retained Azure identity.
+type WorkloadIdentityRecoveryRequiredStatus struct {
+	// previousWorkloadIdentityUid is the UID recorded on the retained Azure identity.
+	// +required
+	PreviousWorkloadIdentityUID types.UID `json:"previousWorkloadIdentityUid"`
 }
 
 // +kubebuilder:object:root=true

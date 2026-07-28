@@ -70,12 +70,15 @@ type fakeUserAssignedIdentitiesClient struct {
 	getErr        error
 	getErrors     []error
 	createErr     error
+	updateErr     error
 	gets          int
 	putAttempts   int
 	puts          int
+	updates       int
 	deletes       int
 	lastName      string
 	lastPut       armmsi.Identity
+	lastUpdate    armmsi.IdentityUpdate
 	events        *[]string
 }
 
@@ -134,12 +137,36 @@ func (f *fakeUserAssignedIdentitiesClient) Delete(
 	return armmsi.UserAssignedIdentitiesClientDeleteResponse{}, nil
 }
 
+func (f *fakeUserAssignedIdentitiesClient) Update(
+	_ context.Context,
+	_, name string,
+	update armmsi.IdentityUpdate,
+	_ *armmsi.UserAssignedIdentitiesClientUpdateOptions,
+) (armmsi.UserAssignedIdentitiesClientUpdateResponse, error) {
+	f.lastName = name
+	f.lastUpdate = update
+	if f.updateErr != nil {
+		return armmsi.UserAssignedIdentitiesClientUpdateResponse{}, f.updateErr
+	}
+	f.updates++
+	f.identity.Tags = update.Tags
+	if f.events != nil {
+		*f.events = append(*f.events, "uami-update")
+	}
+	return armmsi.UserAssignedIdentitiesClientUpdateResponse{Identity: f.identity}, nil
+}
+
 type fakeFederatedIdentityCredentialsClient struct {
-	credential armmsi.FederatedIdentityCredential
-	getErr     error
-	gets       int
-	puts       int
-	events     *[]string
+	credential  armmsi.FederatedIdentityCredential
+	credentials []armmsi.FederatedIdentityCredential
+	getErr      error
+	listErr     error
+	deleteErr   error
+	gets        int
+	puts        int
+	lists       int
+	deletes     int
+	events      *[]string
 }
 
 func (f *fakeFederatedIdentityCredentialsClient) Get(
@@ -157,7 +184,7 @@ func (f *fakeFederatedIdentityCredentialsClient) Get(
 
 func (f *fakeFederatedIdentityCredentialsClient) CreateOrUpdate(
 	_ context.Context,
-	_, _, _ string,
+	_, _, credentialName string,
 	credential armmsi.FederatedIdentityCredential,
 	_ *armmsi.FederatedIdentityCredentialsClientCreateOrUpdateOptions,
 ) (armmsi.FederatedIdentityCredentialsClientCreateOrUpdateResponse, error) {
@@ -166,10 +193,52 @@ func (f *fakeFederatedIdentityCredentialsClient) CreateOrUpdate(
 		*f.events = append(*f.events, "fic-create-or-update")
 	}
 	credential.ID = to.Ptr(testFICID)
+	credential.Name = to.Ptr(credentialName)
 	f.credential = credential
 	return armmsi.FederatedIdentityCredentialsClientCreateOrUpdateResponse{
 		FederatedIdentityCredential: credential,
 	}, nil
+}
+
+func (f *fakeFederatedIdentityCredentialsClient) Delete(
+	_ context.Context,
+	_, _, _ string,
+	_ *armmsi.FederatedIdentityCredentialsClientDeleteOptions,
+) (armmsi.FederatedIdentityCredentialsClientDeleteResponse, error) {
+	if f.deleteErr != nil {
+		return armmsi.FederatedIdentityCredentialsClientDeleteResponse{}, f.deleteErr
+	}
+	f.deletes++
+	f.credential = armmsi.FederatedIdentityCredential{}
+	f.getErr = notFoundResponseError()
+	if f.events != nil {
+		*f.events = append(*f.events, "fic-delete")
+	}
+	return armmsi.FederatedIdentityCredentialsClientDeleteResponse{}, nil
+}
+
+func (f *fakeFederatedIdentityCredentialsClient) List(
+	context.Context,
+	string,
+	string,
+) ([]armmsi.FederatedIdentityCredential, error) {
+	f.lists++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if f.credentials != nil {
+		return f.credentials, nil
+	}
+	if f.getErr != nil {
+		if isNotFound(f.getErr) {
+			return nil, nil
+		}
+		return nil, f.getErr
+	}
+	if f.credential.Name == nil && f.credential.ID == nil && f.credential.Properties == nil {
+		return nil, nil
+	}
+	return []armmsi.FederatedIdentityCredential{f.credential}, nil
 }
 
 type fakeIdentityClientSet struct {

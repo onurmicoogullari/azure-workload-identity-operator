@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -45,6 +46,7 @@ import (
 	kubernetesclient "github.com/onurmicoogullari/azure-workload-identity-operator/internal/kubernetes"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/openshift"
 	webhookv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/internal/webhook/v1alpha1"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -239,6 +241,13 @@ func main() {
 		setupLog.Error(err, "Failed to start manager")
 		os.Exit(1)
 	}
+	if err := workloadidentity.IndexRecoveriesByPreviousWorkloadIdentityUID(
+		context.Background(),
+		mgr.GetFieldIndexer(),
+	); err != nil {
+		setupLog.Error(err, "Failed to configure WorkloadIdentityRecovery index")
+		os.Exit(1)
+	}
 
 	azureCredential, err := azidentity.NewDefaultAzureCredential(nil)
 	if err != nil {
@@ -272,17 +281,31 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "oidcissuer")
 		os.Exit(1)
 	}
+	workloadIdentityManager := &azure.WorkloadIdentityManager{
+		Credential: azureCredential,
+		Scope:      azureScope,
+	}
 	if err := (&controller.WorkloadIdentityReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		RefreshInterval: workloadIdentityRefreshInterval,
-		Recorder:        mgr.GetEventRecorder("workloadidentity-controller"),
-		Manager: &azure.WorkloadIdentityManager{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		RefreshInterval:  workloadIdentityRefreshInterval,
+		Recorder:         mgr.GetEventRecorder("workloadidentity-controller"),
+		Manager:          workloadIdentityManager,
+		RecoveryDetector: workloadIdentityManager,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentity")
+		os.Exit(1)
+	}
+	if err := (&controller.WorkloadIdentityRecoveryReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Manager: &azure.WorkloadIdentityRecoveryManager{
 			Credential: azureCredential,
 			Scope:      azureScope,
 		},
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentity")
+		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentityrecovery")
 		os.Exit(1)
 	}
 	if os.Getenv(enableWebhooksEnvVar) != "false" {
@@ -302,6 +325,10 @@ func main() {
 		}
 		if err := webhookv1alpha1.SetupWorkloadIdentityWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "WorkloadIdentity")
+			os.Exit(1)
+		}
+		if err := webhookv1alpha1.SetupWorkloadIdentityRecoveryWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "WorkloadIdentityRecovery")
 			os.Exit(1)
 		}
 	}

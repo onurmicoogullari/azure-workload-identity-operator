@@ -1,0 +1,33 @@
+# This rule is not used by the project azure-workload-identity-operator itself.
+# It is provided to allow the cluster admin to help manage permissions for users.
+#
+# Grants permissions to create, update, and delete WorkloadIdentityRecovery resources.
+# This role is intended for users who need to manage these resources
+# but should not control RBAC or manage permissions for others.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: azure-workload-identity-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: workloadidentityrecovery-editor-role
+rules:
+- apiGroups:
+  - workloadidentity.azure.micosolutions.se
+  resources:
+  - workloadidentityrecoveries
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - workloadidentity.azure.micosolutions.se
+  resources:
+  - workloadidentityrecoveries/status
+  verbs:
+  - get

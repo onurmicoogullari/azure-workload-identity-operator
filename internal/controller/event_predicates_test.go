@@ -20,10 +20,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 )
 
 var _ = Describe("Controller event predicates", func() {
@@ -38,6 +40,16 @@ var _ = Describe("Controller event predicates", func() {
 			newIdentity.Status.LastReconciledTime = &now
 
 			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeFalse())
+		})
+
+		It("ignores WorkloadIdentityRecovery status-only updates", func() {
+			oldRecovery := recoveryControllerResource()
+			oldRecovery.Generation = 1
+			newRecovery := oldRecovery.DeepCopy()
+			now := metav1.Now()
+			newRecovery.Status.LastAttemptTime = &now
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldRecovery, ObjectNew: newRecovery})).To(BeFalse())
 		})
 
 		It("accepts spec generation changes", func() {
@@ -55,6 +67,131 @@ var _ = Describe("Controller event predicates", func() {
 			newIdentity := oldIdentity.DeepCopy()
 			now := metav1.Now()
 			newIdentity.DeletionTimestamp = &now
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeTrue())
+		})
+	})
+
+	Describe("WorkloadIdentity primary resources", func() {
+		predicate := workloadIdentityPrimaryPredicate()
+
+		It("accepts the transition into recovery in progress", func() {
+			oldIdentity := workloadIdentityWithReadyReason(workloadidentity.ReasonRecoveryRequired)
+			newIdentity := oldIdentity.DeepCopy()
+			apimeta.SetStatusCondition(&newIdentity.Status.Conditions, metav1.Condition{
+				Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				Status:             metav1.ConditionFalse,
+				Reason:             workloadidentity.ReasonRecoveryInProgress,
+				Message:            "Controlled recovery is in progress",
+				ObservedGeneration: newIdentity.Generation,
+			})
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeTrue())
+		})
+
+		It("ignores updates that remain in recovery in progress", func() {
+			oldIdentity := workloadIdentityWithReadyReason(workloadidentity.ReasonRecoveryInProgress)
+			newIdentity := oldIdentity.DeepCopy()
+			now := metav1.Now()
+			newIdentity.Status.LastReconciledTime = &now
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeFalse())
+		})
+
+		It("accepts recovery cancellation after a poll consumed the recovery timer", func() {
+			oldIdentity := workloadIdentityWithReadyReason(workloadidentity.ReasonRecoveryRequired)
+			newIdentity := oldIdentity.DeepCopy()
+			apimeta.SetStatusCondition(&newIdentity.Status.Conditions, metav1.Condition{
+				Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				Status:             metav1.ConditionFalse,
+				Reason:             recoveryReasonCancelled,
+				Message:            "Controlled recovery was cancelled before mutation",
+				ObservedGeneration: newIdentity.Generation,
+			})
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeTrue())
+		})
+
+		It("accepts recovery completion after a poll already marked the target ready", func() {
+			oldIdentity := validWorkloadIdentity("test-workload", testWorkloadNamespace)
+			oldIdentity.Generation = 1
+			oldIdentity.Status.Conditions = []metav1.Condition{{
+				Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				Status:             metav1.ConditionTrue,
+				Reason:             "Reconciled",
+				ObservedGeneration: oldIdentity.Generation,
+			}}
+			newIdentity := oldIdentity.DeepCopy()
+			apimeta.SetStatusCondition(&newIdentity.Status.Conditions, metav1.Condition{
+				Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				Status:             metav1.ConditionFalse,
+				Reason:             recoveryReasonCompleted,
+				Message:            "Controlled recovery completed; normal reconciliation will resume",
+				ObservedGeneration: newIdentity.Generation,
+			})
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeTrue())
+		})
+
+		DescribeTable("ignores repeated terminal recovery status updates", func(reason string) {
+			oldIdentity := workloadIdentityWithReadyReason(reason)
+			newIdentity := oldIdentity.DeepCopy()
+			now := metav1.Now()
+			newIdentity.Status.LastReconciledTime = &now
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeFalse())
+		},
+			Entry("cancelled", recoveryReasonCancelled),
+			Entry("completed", recoveryReasonCompleted),
+		)
+	})
+
+	Describe("WorkloadIdentity recovery targets", func() {
+		predicate := workloadIdentityRecoveryTargetPredicate()
+
+		It("ignores heartbeat-only status updates", func() {
+			oldIdentity := workloadIdentityWithReadyReason(workloadidentity.ReasonRecoveryRequired)
+			newIdentity := oldIdentity.DeepCopy()
+			now := metav1.Now()
+			newIdentity.Status.LastReconciledTime = &now
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeFalse())
+		})
+
+		It("accepts target generation changes", func() {
+			oldIdentity := workloadIdentityWithReadyReason(workloadidentity.ReasonRecoveryRequired)
+			newIdentity := oldIdentity.DeepCopy()
+			newIdentity.Generation++
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeTrue())
+		})
+
+		It("accepts target deletion", func() {
+			oldIdentity := workloadIdentityWithReadyReason(workloadidentity.ReasonRecoveryRequired)
+			newIdentity := oldIdentity.DeepCopy()
+			now := metav1.Now()
+			newIdentity.DeletionTimestamp = &now
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeTrue())
+		})
+
+		It("accepts recovery evidence changes", func() {
+			oldIdentity := workloadIdentityWithReadyReason(workloadidentity.ReasonRecoveryRequired)
+			newIdentity := oldIdentity.DeepCopy()
+			newIdentity.Status.Recovery.PreviousWorkloadIdentityUID = "replacement-previous-uid"
+
+			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeTrue())
+		})
+
+		It("accepts recovery Ready-state changes", func() {
+			oldIdentity := workloadIdentityWithReadyReason(workloadidentity.ReasonRecoveryRequired)
+			newIdentity := oldIdentity.DeepCopy()
+			apimeta.SetStatusCondition(&newIdentity.Status.Conditions, metav1.Condition{
+				Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				Status:             metav1.ConditionFalse,
+				Reason:             workloadidentity.ReasonRecoveryInProgress,
+				ObservedGeneration: newIdentity.Generation,
+			})
 
 			Expect(predicate.Update(event.UpdateEvent{ObjectOld: oldIdentity, ObjectNew: newIdentity})).To(BeTrue())
 		})
@@ -118,6 +255,21 @@ var _ = Describe("Controller event predicates", func() {
 		Expect(predicate.Delete(event.DeleteEvent{Object: identity})).To(BeTrue())
 	})
 })
+
+func workloadIdentityWithReadyReason(reason string) *workloadidentityv1alpha1.WorkloadIdentity {
+	identity := validWorkloadIdentity("test-workload", testWorkloadNamespace)
+	identity.Generation = 1
+	identity.Status.Recovery = &workloadidentityv1alpha1.WorkloadIdentityRecoveryRequiredStatus{
+		PreviousWorkloadIdentityUID: testPreviousWorkloadIdentityUID,
+	}
+	identity.Status.Conditions = []metav1.Condition{{
+		Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		ObservedGeneration: identity.Generation,
+	}}
+	return identity
+}
 
 func readyOIDCIssuerForPredicate() *workloadidentityv1alpha1.OIDCIssuer {
 	issuer := validOIDCIssuer(workloadidentityv1alpha1.OIDCIssuerName)

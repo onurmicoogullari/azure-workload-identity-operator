@@ -29,6 +29,7 @@ Optional env:
   OPERATOR_LOG_FILE                           default: temp file
   OPERATOR_WEBHOOK_URL                        default: https://127.0.0.1:9443/validate-workloadidentity-azure-micosolutions-se-v1alpha1-oidcissuer
                                                 local mode uses this to test webhook handler logic, not API server admission integration
+  OPERATOR_RECOVERY_WEBHOOK_URL               default: https://127.0.0.1:9443/validate-workloadidentity-azure-micosolutions-se-v1alpha1-workloadidentityrecovery
   ENSURE_KEY_VAULT                            default: true
   ENABLE_KEY_VAULT_RBAC                       default: true
   AZURE_RESOURCE_GROUP_NAME                   default: rg-azwi-crc-platform-test (shared platform-owned group)
@@ -64,6 +65,7 @@ Optional env:
   VERIFY_WORKLOAD_IDENTITY_SERVICE_ACCOUNT_RECREATION default: true
   VERIFY_WORKLOAD_IDENTITY_CONFLICTS          default: true
   VERIFY_WORKLOAD_IDENTITY_AZURE_DRIFT        default: true
+  VERIFY_WORKLOAD_IDENTITY_CONTROLLED_RECOVERY default: true
   IMAGE_NAME                                  default: azwi-crc-test
   JOB_NAME                                    default: azwi-crc-test
   WAIT_TIMEOUT                                default: 10m
@@ -147,9 +149,10 @@ script_step_description() {
     17) printf 'Build and run the OpenShift Job.' ;;
     18) printf 'Verify the Job reads the Key Vault secret using workload identity.' ;;
     19) printf 'Mutate Azure federated credential and verify WorkloadIdentity periodic reconcile repairs it.' ;;
-    20) printf 'Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.' ;;
-    21) printf 'During cleanup, verify deletion is also rejected while OpenShift still references the issuer.' ;;
-    22) printf 'Restore OpenShift issuer, delete resources, verify the shared group is retained, and clean it up.' ;;
+    20) printf 'Retain and recreate WorkloadIdentity, then verify controlled recovery and its constraints.' ;;
+    21) printf 'Verify unsafe OIDCIssuer deletion is rejected while WorkloadIdentity exists.' ;;
+    22) printf 'During cleanup, verify deletion is also rejected while OpenShift still references the issuer.' ;;
+    23) printf 'Restore OpenShift issuer, delete resources, verify the shared group is retained, and clean it up.' ;;
     *) printf 'Run OpenShift e2e step.' ;;
   esac
 }
@@ -283,6 +286,7 @@ fi
 operator_log_file=${OPERATOR_LOG_FILE:-}
 operator_workload_identity_refresh_interval=${OPERATOR_WORKLOAD_IDENTITY_REFRESH_INTERVAL:-1m}
 operator_webhook_url=${OPERATOR_WEBHOOK_URL:-https://127.0.0.1:9443/validate-workloadidentity-azure-micosolutions-se-v1alpha1-oidcissuer}
+operator_recovery_webhook_url=${OPERATOR_RECOVERY_WEBHOOK_URL:-https://127.0.0.1:9443/validate-workloadidentity-azure-micosolutions-se-v1alpha1-workloadidentityrecovery}
 ensure_key_vault=${ENSURE_KEY_VAULT:-true}
 enable_key_vault_rbac=${ENABLE_KEY_VAULT_RBAC:-true}
 AZURE_STORAGE_ACCOUNT_NAME=${AZURE_STORAGE_ACCOUNT_NAME:-stazwicrctest}
@@ -323,6 +327,7 @@ WORKLOAD_IDENTITY_DELETION_POLICY=${WORKLOAD_IDENTITY_DELETION_POLICY:-Delete}
 verify_workload_identity_service_account_recreation_enabled=${VERIFY_WORKLOAD_IDENTITY_SERVICE_ACCOUNT_RECREATION:-true}
 verify_workload_identity_conflicts=${VERIFY_WORKLOAD_IDENTITY_CONFLICTS:-true}
 verify_workload_identity_azure_drift=${VERIFY_WORKLOAD_IDENTITY_AZURE_DRIFT:-true}
+verify_workload_identity_controlled_recovery=${VERIFY_WORKLOAD_IDENTITY_CONTROLLED_RECOVERY:-true}
 IMAGE_NAME=${IMAGE_NAME:-azwi-crc-test}
 JOB_NAME=${JOB_NAME:-azwi-crc-test}
 KEY_VAULT_READ_TIMEOUT_SECONDS=${KEY_VAULT_READ_TIMEOUT_SECONDS:-300}
@@ -383,6 +388,11 @@ created_buildconfig=false
 applied_job=false
 applied_conflict_workload_identity=false
 applied_federated_credential_conflict_workload_identity=false
+applied_workload_identity_recovery=false
+applied_duplicate_workload_identity_recovery=false
+created_recovery_blocker_fic=false
+controlled_recovery_started=false
+controlled_recovery_completed=false
 created_conflict_service_account=false
 oidc_deleted=false
 workload_identity_deleted=false
@@ -427,18 +437,42 @@ cleanup_conflict_service_account() {
   fi
 }
 
+cleanup_workload_identity_recovery() {
+  if [[ $applied_duplicate_workload_identity_recovery == "true" ]]; then
+    cleanup_kubernetes_resource workloadidentityrecovery/"$WORKLOAD_IDENTITY_NAME-recovery-duplicate" "" || return $?
+    applied_duplicate_workload_identity_recovery=false
+  fi
+  if [[ $applied_workload_identity_recovery == "true" ]]; then
+    cleanup_kubernetes_resource workloadidentityrecovery/"$WORKLOAD_IDENTITY_NAME-recovery" "" || return $?
+    applied_workload_identity_recovery=false
+  fi
+  if [[ $created_recovery_blocker_fic == "true" ]]; then
+    az identity federated-credential delete \
+      --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+      --identity-name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+      --name "$AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME-recovery-blocker" \
+      --yes >/dev/null 2>&1 || true
+    created_recovery_blocker_fic=false
+  fi
+}
+
 cleanup_workload_identity() {
   workload_identity_deleted=false
   if [[ $applied_workload_identity == "true" ]]; then
     if cleanup_kubernetes_resource "workloadidentity/$WORKLOAD_IDENTITY_NAME" "$NAMESPACE"; then
       workload_identity_deleted=true
-      if [[ $expect_workload_identity_service_account_deleted == "true" && $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" ]]; then
+      if [[ $expect_workload_identity_service_account_deleted == "true" &&
+        $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" &&
+        ( $controlled_recovery_started != "true" || $controlled_recovery_completed == "true" ) ]]; then
         log WATCH "Waiting for WorkloadIdentity deletion to remove operator-created ServiceAccount/$SERVICE_ACCOUNT_NAME"
         wait_for_kubernetes_resource_absent "serviceaccount/$SERVICE_ACCOUNT_NAME" "$NAMESPACE" || return $?
         log VERIFY "WorkloadIdentity deletion removed operator-created ServiceAccount/$SERVICE_ACCOUNT_NAME"
       fi
-      if [[ $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" ]]; then
+      if [[ $WORKLOAD_IDENTITY_DELETION_POLICY == "Delete" &&
+        ( $controlled_recovery_started != "true" || $controlled_recovery_completed == "true" ) ]]; then
         wait_for_workload_identity_azure_resources_deleted || return $?
+      elif [[ $controlled_recovery_started == "true" && $controlled_recovery_completed != "true" ]]; then
+        log SKIP "Skipping per-resource Azure deletion wait because controlled recovery did not commit"
       fi
     else
       return 1
@@ -451,10 +485,10 @@ cleanup_oidc_issuer() {
   oidc_deleted=false
   if [[ $applied_oidc_issuer == "true" ]]; then
     if [[ $verify_openshift_handoff_guard == "true" ]]; then
-      begin_step 21
+      begin_step 22
       assert_oidcissuer_delete_rejected_by_openshift_service_account_issuer || return 1
     fi
-    begin_step 22
+    begin_step 23
     handoff_openshift_service_account_issuer_before_oidcissuer_delete || return 1
     if cleanup_kubernetes_resource oidcissuer/default ""; then
       oidc_deleted=true
@@ -1100,9 +1134,9 @@ cleanup() {
   [[ $initial_exit_code -eq 0 ]] && verify_openshift_handoff_guard=true
 
   if [[ $verify_openshift_handoff_guard == "true" ]]; then
-    begin_step 21
-  else
     begin_step 22
+  else
+    begin_step 23
   fi
   if [[ $initial_exit_code -eq 0 ]]; then
     log CLEANUP "Cleaning up e2e resources"
@@ -1113,6 +1147,7 @@ cleanup() {
   cleanup_step "delete Job" cleanup_job
   cleanup_step "delete conflict WorkloadIdentity CR" cleanup_conflict_workload_identity
   cleanup_step "delete conflict ServiceAccount" cleanup_conflict_service_account
+  cleanup_step "delete WorkloadIdentityRecovery CR" cleanup_workload_identity_recovery
   cleanup_step "delete WorkloadIdentity CR" cleanup_workload_identity
   cleanup_step "delete OIDCIssuer CR" cleanup_oidc_issuer "$verify_openshift_handoff_guard"
   cleanup_step "verify shared platform resource group retention" verify_shared_resource_group_retained
@@ -1543,6 +1578,7 @@ install_operator_custom_resource_definitions() {
   make --no-print-directory -C "$repo_root" install
   kubectl wait --for=condition=Established crd/oidcissuers.workloadidentity.azure.micosolutions.se --timeout="$wait_timeout"
   kubectl wait --for=condition=Established crd/workloadidentities.workloadidentity.azure.micosolutions.se --timeout="$wait_timeout"
+  kubectl wait --for=condition=Established crd/workloadidentityrecoveries.workloadidentity.azure.micosolutions.se --timeout="$wait_timeout"
 }
 
 wait_for_local_operator() {
@@ -2885,6 +2921,408 @@ verify_workload_identity_azure_drift_recovery() {
   return 1
 }
 
+workload_identity_recovery_json() {
+  local name=$1
+  local current_uid=$2
+  local previous_uid=$3
+
+  cat <<EOF
+{
+  "apiVersion": "workloadidentity.azure.micosolutions.se/v1alpha1",
+  "kind": "WorkloadIdentityRecovery",
+  "metadata": {
+    "name": "$name"
+  },
+  "spec": {
+    "workloadIdentityRef": {
+      "namespace": "$NAMESPACE",
+      "name": "$WORKLOAD_IDENTITY_NAME",
+      "uid": "$current_uid"
+    },
+    "previousWorkloadIdentityUid": "$previous_uid"
+  }
+}
+EOF
+}
+
+workload_identity_recovery_admission_review() {
+  local name=$1
+  local current_uid=$2
+  local previous_uid=$3
+  local object
+  object=$(workload_identity_recovery_json "$name" "$current_uid" "$previous_uid")
+
+  cat <<EOF
+{
+  "apiVersion": "admission.k8s.io/v1",
+  "kind": "AdmissionReview",
+  "request": {
+    "uid": "openshift-e2e-$name",
+    "kind": {
+      "group": "workloadidentity.azure.micosolutions.se",
+      "version": "v1alpha1",
+      "kind": "WorkloadIdentityRecovery"
+    },
+    "resource": {
+      "group": "workloadidentity.azure.micosolutions.se",
+      "version": "v1alpha1",
+      "resource": "workloadidentityrecoveries"
+    },
+    "name": "$name",
+    "operation": "CREATE",
+    "userInfo": {
+      "username": "openshift-e2e"
+    },
+    "object": $object
+  }
+}
+EOF
+}
+
+assert_workload_identity_recovery_create_rejected() {
+  local name=$1
+  local current_uid=$2
+  local previous_uid=$3
+  local expected=$4
+  local retry_until_rejected=${5:-false}
+  local deadline
+  local output
+  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+
+  while true; do
+    if [[ $run_operator_locally == "true" ]]; then
+      output=$(workload_identity_recovery_admission_review "$name" "$current_uid" "$previous_uid" |
+        curl -sk -H 'Content-Type: application/json' --data-binary @- "$operator_recovery_webhook_url" 2>/dev/null || true)
+      if [[ $output == *'"allowed":false'* && $output == *"$expected"* ]]; then
+        return
+      fi
+      if [[ $retry_until_rejected == "true" &&
+        $output == *'"allowed":true'* &&
+        $SECONDS -lt $deadline ]]; then
+        log RETRY "Recovery admission cache has not observed the existing source UID yet; retrying"
+        sleep_until_deadline "$deadline" 2 || true
+        continue
+      fi
+      log ERROR "Recovery creation was not rejected as expected: $output"
+      return 1
+    fi
+
+    if output=$(workload_identity_recovery_json "$name" "$current_uid" "$previous_uid" |
+      kubectl create --dry-run=server -f - 2>&1); then
+      if [[ $retry_until_rejected == "true" && $SECONDS -lt $deadline ]]; then
+        log RETRY "Recovery admission cache has not observed the existing source UID yet; retrying"
+        sleep_until_deadline "$deadline" 2 || true
+        continue
+      fi
+      log ERROR "WorkloadIdentityRecovery/$name creation was not rejected"
+      return 1
+    fi
+    if [[ $output == *"$expected"* ]]; then
+      return
+    fi
+    log ERROR "Recovery creation failed for an unexpected reason: $output"
+    return 1
+  done
+}
+
+assert_workload_identity_recovery_create_allowed() {
+  local name=$1
+  local current_uid=$2
+  local previous_uid=$3
+  local output
+
+  if [[ $run_operator_locally != "true" ]]; then
+    return
+  fi
+  output=$(workload_identity_recovery_admission_review "$name" "$current_uid" "$previous_uid" |
+    curl -sk -H 'Content-Type: application/json' --data-binary @- "$operator_recovery_webhook_url" 2>/dev/null || true)
+  if [[ $output != *'"allowed":true'* ]]; then
+    log ERROR "Valid recovery creation was rejected: $output"
+    return 1
+  fi
+}
+
+assert_workload_identity_recovery_delete_allowed() {
+  local name=$1
+  local old_object
+  local output
+
+  if [[ $run_operator_locally != "true" ]]; then
+    if ! kubectl delete workloadidentityrecovery "$name" --dry-run=server >/dev/null; then
+      log ERROR "WorkloadIdentityRecovery/$name deletion admission was rejected"
+      return 1
+    fi
+    return
+  fi
+
+  old_object=$(kubectl get workloadidentityrecovery "$name" -o json)
+  output=$(cat <<EOF | curl -sk -H 'Content-Type: application/json' --data-binary @- "$operator_recovery_webhook_url" 2>/dev/null || true
+{
+  "apiVersion": "admission.k8s.io/v1",
+  "kind": "AdmissionReview",
+  "request": {
+    "uid": "openshift-e2e-delete-$name",
+    "kind": {
+      "group": "workloadidentity.azure.micosolutions.se",
+      "version": "v1alpha1",
+      "kind": "WorkloadIdentityRecovery"
+    },
+    "resource": {
+      "group": "workloadidentity.azure.micosolutions.se",
+      "version": "v1alpha1",
+      "resource": "workloadidentityrecoveries"
+    },
+    "name": "$name",
+    "operation": "DELETE",
+    "userInfo": {
+      "username": "openshift-e2e"
+    },
+    "oldObject": $old_object
+  }
+}
+EOF
+)
+  if [[ $output != *'"allowed":true'* ]]; then
+    log ERROR "WorkloadIdentityRecovery/$name deletion admission was rejected: $output"
+    return 1
+  fi
+}
+
+verify_workload_identity_controlled_recovery() {
+  local recovery_name="$WORKLOAD_IDENTITY_NAME-recovery"
+  local duplicate_recovery_name="$recovery_name-duplicate"
+  local blocker_name="$AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME-recovery-blocker"
+  local invalid_uid=00000000-0000-0000-0000-000000000000
+  local previous_uid
+  local current_uid
+  local reported_previous_uid
+  local recovery_uid
+  local duplicate_recovery_uid
+  local tagged_uid
+  local recovery_tag
+  local recovery_target_tag
+  local last_recovery_tag
+  local credential_tuple
+  local expected_tuple
+  local service_account_owner
+  local patch_output
+  local recovery_plan
+  local plan_identity_id
+  local plan_issuer
+  local plan_subject
+  local plan_audience
+
+  if [[ $verify_workload_identity_controlled_recovery != "true" ]]; then
+    log SKIP "Skipping controlled WorkloadIdentity recovery verification"
+    return
+  fi
+  controlled_recovery_started=true
+
+  current_uid=$(kubectl get workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')
+  log VERIFY "Verifying recovery cannot be created before WorkloadIdentity enters RecoveryRequired"
+  assert_workload_identity_recovery_create_rejected \
+    "$recovery_name-early" "$current_uid" "$invalid_uid" "RecoveryRequired" || return 1
+
+  previous_uid=$current_uid
+  log UPDATE "Changing WorkloadIdentity deletionPolicy to Retain for controlled recovery"
+  kubectl patch workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" \
+    --type=merge -p '{"spec":{"deletionPolicy":"Retain"}}' >/dev/null
+  log DELETE "Deleting WorkloadIdentity/$WORKLOAD_IDENTITY_NAME while retaining its UAMI and ServiceAccount"
+  kubectl delete workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" \
+    --wait=true --timeout="$wait_timeout" >/dev/null
+
+  tagged_uid=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."workload-identity-uid"' -o tsv)
+  service_account_owner=$(kubectl get serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" \
+    -o go-template='{{index .metadata.labels "workloadidentity.azure.micosolutions.se/workload-identity-uid"}}')
+  if [[ $tagged_uid != "$previous_uid" || $service_account_owner != "$previous_uid" ]]; then
+    log ERROR "Retained UAMI or ServiceAccount lost the previous WorkloadIdentity UID"
+    return 1
+  fi
+
+  log APPLY "Recreating WorkloadIdentity/$WORKLOAD_IDENTITY_NAME with a new UID"
+  render "$script_dir/workload-identity.yaml" | kubectl apply -f - >/dev/null
+  current_uid=$(kubectl get workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')
+  if [[ -z $current_uid || $current_uid == "$previous_uid" ]]; then
+    log ERROR "Recreated WorkloadIdentity did not receive a new UID"
+    return 1
+  fi
+  wait_for_workloadidentity_ready_false_reason "$WORKLOAD_IDENTITY_NAME" RecoveryRequired "$wait_timeout" || return 1
+  reported_previous_uid=$(kubectl get workloadidentity "$WORKLOAD_IDENTITY_NAME" -n "$NAMESPACE" \
+    -o jsonpath='{.status.recovery.previousWorkloadIdentityUid}')
+  if [[ $reported_previous_uid != "$previous_uid" ]]; then
+    log ERROR "WorkloadIdentity recovery evidence is '$reported_previous_uid', want '$previous_uid'"
+    return 1
+  fi
+
+  log VERIFY "Verifying recovery rejects the wrong current UID and source UID"
+  assert_workload_identity_recovery_create_rejected \
+    "$recovery_name-wrong-current" "$invalid_uid" "$previous_uid" "current WorkloadIdentity UID" || return 1
+  assert_workload_identity_recovery_create_rejected \
+    "$recovery_name-wrong-source" "$current_uid" "$invalid_uid" "requires source UID" || return 1
+
+  log CREATE "Creating an extra FIC to verify recovery blocks before mutation"
+  az identity federated-credential create \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --identity-name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --name "$blocker_name" \
+    --issuer "$issuer_url" \
+    --subject "system:serviceaccount:$NAMESPACE:$SERVICE_ACCOUNT_NAME-recovery-blocker" \
+    --audiences api://AzureADTokenExchange \
+    -o none
+  created_recovery_blocker_fic=true
+
+  assert_workload_identity_recovery_create_allowed "$recovery_name" "$current_uid" "$previous_uid" || return 1
+  workload_identity_recovery_json "$recovery_name" "$current_uid" "$previous_uid" | kubectl create -f - >/dev/null
+  applied_workload_identity_recovery=true
+
+  log VERIFY "Verifying a second recovery for the same source UID is rejected"
+  assert_workload_identity_recovery_create_rejected \
+    "$duplicate_recovery_name" "$current_uid" "$previous_uid" "already exists" true || return 1
+
+  log CREATE "Bypassing admission to verify the controller rejects a duplicate-source recovery"
+  workload_identity_recovery_json \
+    "$duplicate_recovery_name" "$current_uid" "$previous_uid" | kubectl create -f - >/dev/null
+  applied_duplicate_workload_identity_recovery=true
+
+  if patch_output=$(kubectl patch workloadidentityrecovery "$recovery_name" --type=merge \
+    -p "{\"spec\":{\"previousWorkloadIdentityUid\":\"$invalid_uid\"}}" 2>&1); then
+    log ERROR "WorkloadIdentityRecovery/$recovery_name accepted a spec change"
+    return 1
+  fi
+  if [[ $patch_output != *"spec is immutable"* ]]; then
+    log ERROR "Recovery spec update failed for an unexpected reason: $patch_output"
+    return 1
+  fi
+
+  log WATCH "Waiting for extra FIC to block recovery without mutation"
+  kubectl wait --for=condition=Blocked workloadidentityrecovery/"$recovery_name" --timeout="$wait_timeout"
+  assert_workload_identity_recovery_delete_allowed "$recovery_name" || return 1
+  tagged_uid=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."workload-identity-uid"' -o tsv)
+  recovery_tag=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."workload-identity-recovery-uid"' -o tsv)
+  if [[ $tagged_uid != "$previous_uid" || -n $recovery_tag ]]; then
+    log ERROR "Blocked recovery mutated UAMI ownership or fencing tags"
+    return 1
+  fi
+
+  log DELETE "Removing extra FIC so the same recovery can resume"
+  az identity federated-credential delete \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --identity-name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --name "$blocker_name" \
+    --yes -o none
+  created_recovery_blocker_fic=false
+
+  log WATCH "Waiting for the duplicate-source recovery to fail terminally"
+  kubectl wait \
+    --for=condition=Failed \
+    workloadidentityrecovery/"$duplicate_recovery_name" \
+    --timeout="$wait_timeout"
+  if [[ $(kubectl get workloadidentityrecovery "$duplicate_recovery_name" \
+    -o jsonpath='{.status.conditions[?(@.type=="Failed")].reason}') != "DuplicateRecovery" ]]; then
+    log ERROR "Duplicate-source recovery did not fail with reason DuplicateRecovery"
+    return 1
+  fi
+  if [[ -n $(kubectl get workloadidentityrecovery "$duplicate_recovery_name" \
+    -o jsonpath='{.status.conditions[?(@.type=="Blocked")].status}') ]]; then
+    log ERROR "Terminal duplicate-source recovery retained a contradictory Blocked condition"
+    return 1
+  fi
+  if [[ $(kubectl get workloadidentityrecovery "$duplicate_recovery_name" \
+    -o jsonpath='{.status.mutationStarted}') == "true" ]]; then
+    log ERROR "Duplicate-source recovery started external mutation"
+    return 1
+  fi
+
+  log WATCH "Waiting for WorkloadIdentityRecovery/$recovery_name to complete"
+  kubectl wait --for=condition=Complete workloadidentityrecovery/"$recovery_name" --timeout="$wait_timeout"
+  recovery_uid=$(kubectl get workloadidentityrecovery "$recovery_name" -o jsonpath='{.metadata.uid}')
+  duplicate_recovery_uid=$(kubectl get workloadidentityrecovery "$duplicate_recovery_name" -o jsonpath='{.metadata.uid}')
+  recovery_plan=$(kubectl get workloadidentityrecovery "$recovery_name" \
+    -o go-template='{{.status.plan.userAssignedIdentity.id}}{{"\t"}}{{.status.plan.federatedIdentityCredential.issuer}}{{"\t"}}{{.status.plan.federatedIdentityCredential.subject}}{{"\t"}}{{index .status.plan.federatedIdentityCredential.audiences 0}}')
+  IFS=$'\t' read -r plan_identity_id plan_issuer plan_subject plan_audience <<<"$recovery_plan"
+  if [[ $(kubectl get workloadidentityrecovery "$recovery_name" -o jsonpath='{.status.mutationStarted}') != "true" ||
+    $(kubectl get workloadidentityrecovery "$recovery_name" -o jsonpath='{.status.commitVerified}') != "true" ||
+    -z $plan_identity_id ||
+    $plan_issuer != "$issuer_url" ||
+    $plan_subject != "system:serviceaccount:$NAMESPACE:$SERVICE_ACCOUNT_NAME" ||
+    $plan_audience != "api://AzureADTokenExchange" ]]; then
+    log ERROR "Recovery completed without the expected forward-only plan and commit checkpoints"
+    return 1
+  fi
+
+  log WATCH "Waiting for normal WorkloadIdentity reconciliation to resume"
+  kubectl wait --for=condition=Ready workloadidentity/"$WORKLOAD_IDENTITY_NAME" \
+    -n "$NAMESPACE" --timeout="$wait_timeout"
+  tagged_uid=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."workload-identity-uid"' -o tsv)
+  recovery_tag=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."workload-identity-recovery-uid"' -o tsv)
+  recovery_target_tag=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."workload-identity-recovery-target-uid"' -o tsv)
+  last_recovery_tag=$(az identity show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --query 'tags."workload-identity-last-recovery-uid"' -o tsv)
+  if [[ $tagged_uid != "$current_uid" ||
+    -n $recovery_tag ||
+    -n $recovery_target_tag ||
+    $last_recovery_tag != "$recovery_uid" ||
+    $last_recovery_tag == "$duplicate_recovery_uid" ]]; then
+    log ERROR "Committed UAMI recovery tags are incorrect"
+    return 1
+  fi
+
+  expected_tuple=$issuer_url$'\n'"system:serviceaccount:$NAMESPACE:$SERVICE_ACCOUNT_NAME"$'\n'api://AzureADTokenExchange
+  credential_tuple=$(az identity federated-credential show \
+    --resource-group "$AZURE_RESOURCE_GROUP_NAME" \
+    --identity-name "$AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME" \
+    --name "$AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME" \
+    --query '[issuer, subject, audiences[0]]' -o tsv)
+  service_account_owner=$(kubectl get serviceaccount "$SERVICE_ACCOUNT_NAME" -n "$NAMESPACE" \
+    -o go-template='{{index .metadata.labels "workloadidentity.azure.micosolutions.se/workload-identity-uid"}}')
+  if [[ $credential_tuple != "$expected_tuple" || $service_account_owner != "$current_uid" ]]; then
+    log ERROR "Recovered FIC tuple or ServiceAccount ownership is incorrect"
+    return 1
+  fi
+
+  log RUN "Re-running Job/$JOB_NAME with the recovered workload identity"
+  cleanup_kubernetes_resource "job/$JOB_NAME" "$NAMESPACE" || return 1
+  render "$script_dir/job.yaml" | kubectl apply -f - >/dev/null
+  if ! wait_for_job_completion "$JOB_NAME" "$NAMESPACE" "$wait_timeout"; then
+    dump_job_diagnostics "$JOB_NAME" "$NAMESPACE"
+    return 1
+  fi
+  if [[ $(kubectl logs "job/$JOB_NAME" -n "$NAMESPACE") != *"Successfully retrieved secret"* ]]; then
+    log ERROR "Recovered workload identity Job did not report successful Key Vault access"
+    dump_job_diagnostics "$JOB_NAME" "$NAMESPACE"
+    return 1
+  fi
+
+  controlled_recovery_completed=true
+  log DELETE "Deleting terminal WorkloadIdentityRecovery records"
+  kubectl delete workloadidentityrecovery \
+    "$recovery_name" "$duplicate_recovery_name" \
+    --wait=true --timeout="$wait_timeout" >/dev/null
+  applied_workload_identity_recovery=false
+  applied_duplicate_workload_identity_recovery=false
+  log VERIFY "Forward-only controlled recovery completed, rejected the duplicate source, resumed from Blocked, and retained no recovery record after manual deletion"
+}
+
 render() {
   local file=$1
   local content
@@ -3047,4 +3485,7 @@ begin_step 19
 verify_workload_identity_azure_drift_recovery
 
 begin_step 20
+verify_workload_identity_controlled_recovery
+
+begin_step 21
 assert_oidcissuer_delete_rejected_by_workload_identity

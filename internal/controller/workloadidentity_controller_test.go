@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	clientfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
@@ -38,13 +39,14 @@ import (
 )
 
 const (
-	testWorkloadIdentityIssuerURL = "https://oidctest123.blob.core.windows.net/oidc"
-	testWorkloadNamespace         = "default"
-	testServiceAccountName        = "test-sa"
-	testOtherServiceAccountName   = "other-sa"
-	testClientID                  = "client-id"
-	testTenantID                  = "tenant-id"
-	testExistingLabel             = "existing"
+	testWorkloadIdentityIssuerURL   = "https://oidctest123.blob.core.windows.net/oidc"
+	testWorkloadNamespace           = "default"
+	testServiceAccountName          = "test-sa"
+	testOtherServiceAccountName     = "other-sa"
+	testClientID                    = "client-id"
+	testTenantID                    = "tenant-id"
+	testExistingLabel               = "existing"
+	testPreviousWorkloadIdentityUID = "previous-workload-identity-uid"
 )
 
 type fakeWorkloadIdentityManager struct {
@@ -54,6 +56,20 @@ type fakeWorkloadIdentityManager struct {
 	ensures  int
 	deletes  int
 	subject  string
+}
+
+type fakeRecoveryDetector struct {
+	evidence workloadidentity.RecoveryRequiredEvidence
+	err      error
+	calls    int
+}
+
+func (f *fakeRecoveryDetector) DetectRecovery(
+	context.Context,
+	*workloadidentityv1alpha1.WorkloadIdentity,
+) (workloadidentity.RecoveryRequiredEvidence, error) {
+	f.calls++
+	return f.evidence, f.err
 }
 
 func (f *fakeWorkloadIdentityManager) Ensure(_ context.Context, _ *workloadidentityv1alpha1.WorkloadIdentity, _, subject string) (workloadidentity.ManagedIdentity, error) {
@@ -586,6 +602,142 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(condition.Reason).To(Equal("ServiceAccountConflict"))
 		})
 
+		It("publishes recovery evidence when Azure and the ServiceAccount have the same previous owner", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Labels: map[string]string{
+					serviceAccountManagedBy: serviceAccountManagerName,
+					serviceAccountUID:       testPreviousWorkloadIdentityUID,
+				},
+			}})).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{}
+			detector := &fakeRecoveryDetector{evidence: workloadidentity.RecoveryRequiredEvidence{
+				PreviousWorkloadIdentityUID: testPreviousWorkloadIdentityUID,
+			}}
+			reconciler := &WorkloadIdentityReconciler{
+				Client:           k8sClient,
+				Scheme:           k8sClient.Scheme(),
+				Manager:          manager,
+				RecoveryDetector: detector,
+			}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(manager.ensures).To(Equal(0))
+			Expect(detector.calls).To(Equal(1))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			condition := apimeta.FindStatusCondition(
+				updated.Status.Conditions,
+				string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+			)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Reason).To(Equal(workloadidentity.ReasonRecoveryRequired))
+			Expect(updated.Status.Recovery).NotTo(BeNil())
+			Expect(updated.Status.Recovery.PreviousWorkloadIdentityUID).To(Equal(types.UID(testPreviousWorkloadIdentityUID)))
+		})
+
+		It("keeps recovery evidence while a fenced recovery is in progress", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			identity.Status.Recovery = &workloadidentityv1alpha1.WorkloadIdentityRecoveryRequiredStatus{
+				PreviousWorkloadIdentityUID: testPreviousWorkloadIdentityUID,
+			}
+			Expect(k8sClient.Status().Update(ctx, identity)).To(Succeed())
+			Expect(k8sClient.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceAccountKey.Name,
+				Namespace: serviceAccountKey.Namespace,
+				Labels: map[string]string{
+					serviceAccountManagedBy: serviceAccountManagerName,
+					serviceAccountUID:       testPreviousWorkloadIdentityUID,
+				},
+			}})).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{}
+			detector := &fakeRecoveryDetector{err: workloadidentity.NewConflictError(
+				workloadidentity.ReasonRecoveryInProgress,
+				"controlled recovery is fenced",
+			)}
+			reconciler := &WorkloadIdentityReconciler{
+				Client:           k8sClient,
+				Scheme:           k8sClient.Scheme(),
+				Manager:          manager,
+				RecoveryDetector: detector,
+			}
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(workloadIdentityRecoveryPollInterval))
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			condition := apimeta.FindStatusCondition(
+				updated.Status.Conditions,
+				string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+			)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Reason).To(Equal(workloadidentity.ReasonRecoveryInProgress))
+			Expect(updated.Status.Recovery).NotTo(BeNil())
+			Expect(updated.Status.Recovery.PreviousWorkloadIdentityUID).To(Equal(types.UID(testPreviousWorkloadIdentityUID)))
+		})
+
+		It("rejects a stale normal status patch after recovery acquires the target lock", func() {
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+
+			persisted := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, persisted)).To(Succeed())
+			persisted.Status.Recovery = &workloadidentityv1alpha1.WorkloadIdentityRecoveryRequiredStatus{
+				PreviousWorkloadIdentityUID: testPreviousWorkloadIdentityUID,
+			}
+			apimeta.SetStatusCondition(&persisted.Status.Conditions, metav1.Condition{
+				Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				Status:             metav1.ConditionFalse,
+				Reason:             workloadidentity.ReasonRecoveryRequired,
+				Message:            "recovery required",
+				ObservedGeneration: persisted.Generation,
+			})
+			Expect(k8sClient.Status().Update(ctx, persisted)).To(Succeed())
+
+			stale := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, stale)).To(Succeed())
+			locked := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, locked)).To(Succeed())
+			apimeta.SetStatusCondition(&locked.Status.Conditions, metav1.Condition{
+				Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				Status:             metav1.ConditionFalse,
+				Reason:             workloadidentity.ReasonRecoveryInProgress,
+				Message:            "controlled recovery is in progress",
+				ObservedGeneration: locked.Generation,
+			})
+			Expect(k8sClient.Status().Update(ctx, locked)).To(Succeed())
+
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient}
+			err := reconciler.setWorkloadIdentityRecoveryRequired(
+				ctx,
+				stale,
+				workloadidentity.RecoveryRequiredEvidence{
+					PreviousWorkloadIdentityUID: testPreviousWorkloadIdentityUID,
+				},
+				"stale normal reconciliation",
+			)
+			Expect(apierrors.IsConflict(err)).To(BeTrue())
+
+			current := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, current)).To(Succeed())
+			condition := apimeta.FindStatusCondition(
+				current.Status.Conditions,
+				string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+			)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Reason).To(Equal(workloadidentity.ReasonRecoveryInProgress))
+		})
+
 		It("does not overwrite an adopted ServiceAccount annotated for another Azure identity", func() {
 			createReadyOIDCIssuer(ctx, issuerKey.Name)
 			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
@@ -623,14 +775,15 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{
-				err: workloadidentity.NewConflictError(
-					workloadidentity.ReasonRecoveryRequired,
+				err: workloadidentity.NewRecoveryRequiredError(
 					"an earlier WorkloadIdentity instance owns the user assigned identity",
+					types.UID("earlier-workload-identity-uid"),
 				),
 			}
 			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
-			Expect(err).To(MatchError(ContainSubstring("earlier WorkloadIdentity instance")))
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(reconciler.refreshInterval(identity)))
 			Expect(manager.ensures).To(Equal(1))
 			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{}))).To(BeTrue())
 
@@ -640,6 +793,44 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal(workloadidentity.ReasonRecoveryRequired))
+			Expect(updated.Status.Recovery).NotTo(BeNil())
+			Expect(updated.Status.Recovery.PreviousWorkloadIdentityUID).To(Equal(types.UID("earlier-workload-identity-uid")))
+		})
+
+		It("polls while Azure recovery is in progress before the ServiceAccount exists", func() {
+			createReadyOIDCIssuer(ctx, issuerKey.Name)
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			identity.Status.Recovery = &workloadidentityv1alpha1.WorkloadIdentityRecoveryRequiredStatus{
+				PreviousWorkloadIdentityUID: testPreviousWorkloadIdentityUID,
+			}
+			Expect(k8sClient.Status().Update(ctx, identity)).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{err: workloadidentity.NewConflictError(
+				workloadidentity.ReasonRecoveryInProgress,
+				"controlled recovery is fenced",
+			)}
+			reconciler := &WorkloadIdentityReconciler{
+				Client:  k8sClient,
+				Scheme:  k8sClient.Scheme(),
+				Manager: manager,
+			}
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(workloadIdentityRecoveryPollInterval))
+			Expect(manager.ensures).To(Equal(1))
+			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{}))).To(BeTrue())
+
+			updated := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, updated)).To(Succeed())
+			condition := apimeta.FindStatusCondition(
+				updated.Status.Conditions,
+				string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+			)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Reason).To(Equal(workloadidentity.ReasonRecoveryInProgress))
+			Expect(updated.Status.Recovery).NotTo(BeNil())
+			Expect(updated.Status.Recovery.PreviousWorkloadIdentityUID).To(Equal(types.UID(testPreviousWorkloadIdentityUID)))
 		})
 
 		It("waits when the OIDCIssuer is not ready", func() {
@@ -662,6 +853,122 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 			Expect(condition.Reason).To(Equal("OIDCIssuerNotReady"))
 		})
+
+		DescribeTable("preserves active recovery state while OIDC is unavailable and resumes when ready",
+			func(recoveryReason string, issuerExists bool) {
+				if issuerExists {
+					Expect(k8sClient.Create(ctx, validOIDCIssuer(issuerKey.Name))).To(Succeed())
+				}
+				identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+				Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+				identity.Status.Recovery = &workloadidentityv1alpha1.WorkloadIdentityRecoveryRequiredStatus{
+					PreviousWorkloadIdentityUID: testPreviousWorkloadIdentityUID,
+				}
+				apimeta.SetStatusCondition(&identity.Status.Conditions, metav1.Condition{
+					Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+					Status:             metav1.ConditionFalse,
+					Reason:             recoveryReason,
+					ObservedGeneration: identity.Generation,
+				})
+				Expect(k8sClient.Status().Update(ctx, identity)).To(Succeed())
+
+				manager := &fakeWorkloadIdentityManager{}
+				if recoveryReason == workloadidentity.ReasonRecoveryRequired {
+					manager.err = workloadidentity.NewRecoveryRequiredError(
+						"controlled recovery is still required",
+						testPreviousWorkloadIdentityUID,
+					)
+				} else {
+					manager.err = workloadidentity.NewConflictError(
+						workloadidentity.ReasonRecoveryInProgress,
+						"controlled recovery is fenced",
+					)
+				}
+				reconciler := &WorkloadIdentityReconciler{
+					Client:  k8sClient,
+					Scheme:  k8sClient.Scheme(),
+					Manager: manager,
+				}
+
+				result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+				Expect(err).NotTo(HaveOccurred())
+				expectedRequeue := 30 * time.Second
+				if recoveryReason == workloadidentity.ReasonRecoveryInProgress {
+					expectedRequeue = workloadIdentityRecoveryPollInterval
+				}
+				Expect(result.RequeueAfter).To(Equal(expectedRequeue))
+				Expect(manager.ensures).To(Equal(0))
+
+				current := &workloadidentityv1alpha1.WorkloadIdentity{}
+				Expect(k8sClient.Get(ctx, identityKey, current)).To(Succeed())
+				ready := apimeta.FindStatusCondition(
+					current.Status.Conditions,
+					string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				)
+				Expect(ready).NotTo(BeNil())
+				Expect(ready.Reason).To(Equal(recoveryReason))
+				Expect(current.Status.Recovery).NotTo(BeNil())
+				Expect(current.Status.Recovery.PreviousWorkloadIdentityUID).To(Equal(types.UID(testPreviousWorkloadIdentityUID)))
+
+				if issuerExists {
+					issuer := &workloadidentityv1alpha1.OIDCIssuer{}
+					Expect(k8sClient.Get(ctx, issuerKey, issuer)).To(Succeed())
+					issuer.Status.IssuerURL = testWorkloadIdentityIssuerURL
+					apimeta.SetStatusCondition(&issuer.Status.Conditions, metav1.Condition{
+						Type:               string(workloadidentityv1alpha1.OIDCIssuerConditionReady),
+						Status:             metav1.ConditionTrue,
+						Reason:             "RecoveryIssuerReady",
+						ObservedGeneration: issuer.Generation,
+					})
+					Expect(k8sClient.Status().Update(ctx, issuer)).To(Succeed())
+				} else {
+					createReadyOIDCIssuer(ctx, issuerKey.Name)
+				}
+
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+				Expect(err).NotTo(HaveOccurred())
+				expectedEnsures := 1
+				if recoveryReason == workloadidentity.ReasonRecoveryInProgress {
+					expectedEnsures = 0
+				}
+				Expect(manager.ensures).To(Equal(expectedEnsures))
+				Expect(k8sClient.Get(ctx, identityKey, current)).To(Succeed())
+				ready = apimeta.FindStatusCondition(
+					current.Status.Conditions,
+					string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				)
+				Expect(ready).NotTo(BeNil())
+				Expect(ready.Reason).To(Equal(recoveryReason))
+				Expect(current.Status.Recovery).NotTo(BeNil())
+				Expect(current.Status.Recovery.PreviousWorkloadIdentityUID).To(Equal(types.UID(testPreviousWorkloadIdentityUID)))
+
+				if recoveryReason == workloadidentity.ReasonRecoveryInProgress {
+					apimeta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{
+						Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+						Status:             metav1.ConditionFalse,
+						Reason:             recoveryReasonCompleted,
+						Message:            "Controlled recovery completed; normal reconciliation will resume",
+						ObservedGeneration: current.Generation,
+					})
+					Expect(k8sClient.Status().Update(ctx, current)).To(Succeed())
+					manager.err = nil
+
+					_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+					Expect(err).NotTo(HaveOccurred())
+					Expect(manager.ensures).To(Equal(1))
+					Expect(k8sClient.Get(ctx, identityKey, current)).To(Succeed())
+					ready = apimeta.FindStatusCondition(
+						current.Status.Conditions,
+						string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+					)
+					Expect(ready).NotTo(BeNil())
+					Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+					Expect(current.Status.Recovery).To(BeNil())
+				}
+			},
+			Entry("RecoveryRequired across an unready issuer", workloadidentity.ReasonRecoveryRequired, true),
+			Entry("RecoveryInProgress across a missing issuer", workloadidentity.ReasonRecoveryInProgress, false),
+		)
 
 		It("enqueues WorkloadIdentities when the default OIDCIssuer changes", func() {
 			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
@@ -727,6 +1034,59 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			}})
 
 			Expect(requests).To(BeEmpty())
+		})
+
+		It("holds deletionPolicy Delete while recovery is in progress and releases it afterward", func() {
+			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
+			identity.Finalizers = []string{workloadIdentityFinalizer}
+			identity.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			Expect(k8sClient.Get(ctx, identityKey, identity)).To(Succeed())
+			identity.Status.Recovery = &workloadidentityv1alpha1.WorkloadIdentityRecoveryRequiredStatus{
+				PreviousWorkloadIdentityUID: testPreviousWorkloadIdentityUID,
+			}
+			apimeta.SetStatusCondition(&identity.Status.Conditions, metav1.Condition{
+				Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				Status:             metav1.ConditionFalse,
+				Reason:             workloadidentity.ReasonRecoveryInProgress,
+				ObservedGeneration: identity.Generation,
+			})
+			Expect(k8sClient.Status().Update(ctx, identity)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
+
+			manager := &fakeWorkloadIdentityManager{}
+			reconciler := &WorkloadIdentityReconciler{
+				Client:  k8sClient,
+				Scheme:  k8sClient.Scheme(),
+				Manager: manager,
+			}
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(workloadIdentityRecoveryPollInterval))
+			Expect(manager.deletes).To(Equal(0))
+
+			current := &workloadidentityv1alpha1.WorkloadIdentity{}
+			Expect(k8sClient.Get(ctx, identityKey, current)).To(Succeed())
+			Expect(controllerutil.ContainsFinalizer(current, workloadIdentityFinalizer)).To(BeTrue())
+			original := current.DeepCopy()
+			apimeta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{
+				Type:               string(workloadidentityv1alpha1.WorkloadIdentityConditionReady),
+				Status:             metav1.ConditionFalse,
+				Reason:             recoveryReasonCompleted,
+				ObservedGeneration: current.Generation,
+			})
+			Expect(k8sClient.Status().Patch(ctx, current, client.MergeFrom(original))).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(manager.deletes).To(Equal(1))
+			Eventually(func() bool {
+				return apierrors.IsNotFound(k8sClient.Get(
+					ctx,
+					identityKey,
+					&workloadidentityv1alpha1.WorkloadIdentity{},
+				))
+			}).Should(BeTrue())
 		})
 
 		It("deletes Azure resources and created ServiceAccount based on persisted provenance", func() {
@@ -907,9 +1267,9 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			identity.Spec.DeletionPolicy = workloadidentityv1alpha1.DeletionPolicyDelete
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
-			manager := &fakeWorkloadIdentityManager{err: workloadidentity.NewConflictError(
-				workloadidentity.ReasonRecoveryRequired,
+			manager := &fakeWorkloadIdentityManager{err: workloadidentity.NewRecoveryRequiredError(
 				"old UID owns Azure resources",
+				types.UID("old-uid"),
 			)}
 			recorder := events.NewFakeRecorder(1)
 			reconciler := &WorkloadIdentityReconciler{
@@ -918,8 +1278,9 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 				Manager:  manager,
 				Recorder: recorder,
 			}
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
-			Expect(err).To(MatchError(ContainSubstring("old UID owns Azure resources")))
+			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(reconciler.refreshInterval(identity)))
 			Expect(manager.ensures).To(Equal(1))
 			Expect(manager.deletes).To(Equal(0))
 			Expect(apierrors.IsNotFound(k8sClient.Get(ctx, serviceAccountKey, &corev1.ServiceAccount{}))).To(BeTrue())

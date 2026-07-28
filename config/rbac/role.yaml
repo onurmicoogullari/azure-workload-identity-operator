@@ -57,6 +57,7 @@ rules:
   resources:
   - oidcissuers/finalizers
   - workloadidentities/finalizers
+  - workloadidentityrecoveries/finalizers
   verbs:
   - update
 - apiGroups:
@@ -64,7 +65,18 @@ rules:
   resources:
   - oidcissuers/status
   - workloadidentities/status
+  - workloadidentityrecoveries/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - workloadidentity.azure.micosolutions.se
+  resources:
+  - workloadidentityrecoveries
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
