@@ -1,0 +1,13 @@
+{{- if .Values.azureWorkloadIdentityWebhook.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: azure-wi-webhook-config
+  namespace: {{ .Values.azureWorkloadIdentityWebhook.namespaceOverride }}
+  labels:
+    {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
+    azure-workload-identity.io/system: "true"
+data:
+  AZURE_ENVIRONMENT: {{ .Values.azureWorkloadIdentityWebhook.azureEnvironment | quote }}
+  AZURE_TENANT_ID: {{ required "azure.tenantId is required when azureWorkloadIdentityWebhook.enabled=true" .Values.azure.tenantId | quote }}
+{{- end }}

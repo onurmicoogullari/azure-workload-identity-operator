@@ -1,0 +1,24 @@
+{{- $service := .Values.service | default dict -}}
+{{- if or (hasKey $service "port") (hasKey $service "targetPort") -}}
+{{- fail "the Azure workload identity webhook Service ports are fixed at 443 -> webhook-server" -}}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: azure-wi-webhook-webhook-service
+  namespace: {{ include "workload-identity-webhook.namespace" . }}
+  labels:
+    app: {{ include "workload-identity-webhook.name" . | quote }}
+    azure-workload-identity.io/system: "true"
+    chart: {{ include "workload-identity-webhook.name" . | quote }}
+    release: {{ .Release.Name | quote }}
+spec:
+  type: {{ $service.type | default "ClusterIP" }}
+  ports:
+    - port: 443
+      targetPort: webhook-server
+  selector:
+    app: {{ include "workload-identity-webhook.name" . | quote }}
+    azure-workload-identity.io/system: "true"
+    chart: {{ include "workload-identity-webhook.name" . | quote }}
+    release: {{ .Release.Name | quote }}

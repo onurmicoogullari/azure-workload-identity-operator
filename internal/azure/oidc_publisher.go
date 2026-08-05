@@ -20,7 +20,7 @@ import (
 const oidcIssuerUIDTag = "oidc-issuer-uid"
 
 type BlobOIDCDocumentPublisher struct {
-	Client     client.Client
+	Reader     client.Reader
 	Credential azcore.TokenCredential
 	Scope      Scope
 }
@@ -35,8 +35,8 @@ func (p *BlobOIDCDocumentPublisher) Publish(ctx context.Context, issuer *azworkl
 	if p.Credential == nil {
 		return oidc.PublishedDocuments{}, fmt.Errorf("azure credential is required")
 	}
-	if p.Client == nil {
-		return oidc.PublishedDocuments{}, fmt.Errorf("kubernetes client is required")
+	if p.Reader == nil {
+		return oidc.PublishedDocuments{}, fmt.Errorf("kubernetes reader is required")
 	}
 	if err := p.Scope.Validate(); err != nil {
 		return oidc.PublishedDocuments{}, fmt.Errorf("validate Azure scope: %w", err)
@@ -53,7 +53,7 @@ func (p *BlobOIDCDocumentPublisher) Publish(ctx context.Context, issuer *azworkl
 	}
 
 	issuerURL := issuerURL(issuer)
-	documents, err := buildOIDCDocuments(ctx, p.Client, issuer, issuerURL)
+	documents, err := buildOIDCDocuments(ctx, p.Reader, issuer, issuerURL)
 	if err != nil {
 		return oidc.PublishedDocuments{}, err
 	}
@@ -68,8 +68,8 @@ func (p *BlobOIDCDocumentPublisher) Publish(ctx context.Context, issuer *azworkl
 	return oidc.PublishedDocuments{IssuerURL: issuerURL, AzureResources: resources, SigningKeys: documents.SigningKeys}, nil
 }
 
-func buildOIDCDocuments(ctx context.Context, c client.Client, issuer *azworkloadidentityv1alpha1.OIDCIssuer, issuerURL string) (oidcDocuments, error) {
-	publicKeys, err := signingkey.PublicKeysPEM(ctx, c, issuer.Spec.SigningKey)
+func buildOIDCDocuments(ctx context.Context, reader client.Reader, issuer *azworkloadidentityv1alpha1.OIDCIssuer, issuerURL string) (oidcDocuments, error) {
+	publicKeys, err := signingkey.PublicKeysPEM(ctx, reader, issuer.Spec.SigningKey)
 	if err != nil {
 		return oidcDocuments{}, err
 	}

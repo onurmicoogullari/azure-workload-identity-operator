@@ -1,0 +1,128 @@
+name: Release Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Proposed release version without the v prefix
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/onurmicoogullari/azure-workload-identity-operator
+  HELM_VERSION: v4.2.3
+
+jobs:
+  candidate:
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: '[[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+
+      - name: Clone the candidate commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install pinned Helm
+        shell: bash
+        run: |
+          install_dir="$RUNNER_TEMP/helm-${HELM_VERSION}"
+          mkdir -p "$install_dir"
+          cd "$install_dir"
+          archive="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/${archive}"
+          curl -fsSLO "https://get.helm.sh/${archive}.sha256sum"
+          sha256sum --check "${archive}.sha256sum"
+          tar -xzf "$archive"
+          sudo install "$install_dir/linux-amd64/helm" /usr/local/bin/helm
+
+      - name: Validate source and chart
+        run: |
+          make test
+          make helm-lint
+          source_status=$(git status --porcelain --untracked-files=all)
+          if [[ -n "$source_status" ]]; then
+            printf '%s\n' "$source_status" >&2
+            exit 1
+          fi
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build multi-platform candidate image
+        id: image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:candidate-${{ github.sha }}
+          provenance: true
+          sbom: true
+
+      - name: Package digest-pinned candidate chart
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ $IMAGE_DIGEST =~ ^sha256:[a-f0-9]{64}$ ]]
+          helm dependency build --skip-refresh dist/chart
+          mkdir -p dist/candidate-chart dist/packages
+          cp -R dist/chart/. dist/candidate-chart/
+          sed -i "s/^    digest: \"\"$/    digest: \"$IMAGE_DIGEST\"/" \
+            dist/candidate-chart/values.yaml
+          helm lint dist/candidate-chart \
+            --set-string azure.tenantId=00000000-0000-0000-0000-000000000000 \
+            --set-string azure.subscriptionId=00000000-0000-0000-0000-000000000000 \
+            --set-string azure.resourceGroupName=rg-release-validation \
+            --set-string azure.location=swedencentral
+          helm package dist/candidate-chart \
+            --version "$VERSION" \
+            --app-version "v$VERSION" \
+            --destination dist/packages
+          chart_file="azure-workload-identity-operator-${VERSION}.tgz"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg commit "$GITHUB_SHA" \
+            --arg imageRepository "$IMAGE" \
+            --arg imageDigest "$IMAGE_DIGEST" \
+            --arg chartFile "$chart_file" \
+            '{version:$version,commit:$commit,imageRepository:$imageRepository,imageDigest:$imageDigest,chartFile:$chartFile}' \
+            >dist/packages/candidate.json
+          (cd dist/packages && sha256sum "$chart_file" candidate.json >SHA256SUMS)
+          {
+            echo "Candidate commit: \`$GITHUB_SHA\`"
+            echo "Candidate image: \`$IMAGE@$IMAGE_DIGEST\`"
+            echo "Candidate artifact: \`release-candidate\` from run \`$GITHUB_RUN_ID\`"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable candidate bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate
+          path: dist/packages
+          if-no-files-found: error
+          retention-days: 14

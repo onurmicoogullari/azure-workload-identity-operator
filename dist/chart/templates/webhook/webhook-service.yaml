@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
+  name: azure-workload-identity-operator-webhook-service
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+  - port: 443
+    protocol: TCP
+    targetPort: webhook-server
+  selector:
+    app.kubernetes.io/name: {{ include "azure-workload-identity-operator.name" . }}
+    control-plane: controller-manager

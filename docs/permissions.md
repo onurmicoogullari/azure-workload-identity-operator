@@ -1,6 +1,17 @@
 # Azure Permissions
 
-The operator uses `DefaultAzureCredential`. In-cluster, this normally means the operator Pod runs with Azure Workload Identity or managed identity.
+The operator uses `DefaultAzureCredential`. The Helm chart supports initial
+Service Principal bootstrap through an existing Kubernetes Secret and later
+migration to an already-established workload or managed identity.
+
+The disposable CRC e2e path is different from a production installation: by
+default its Azure CLI identity creates an ephemeral Entra application and
+Service Principal, grants temporary `Contributor` access at subscription scope
+so the test can prove resource-group creation, and deletes the tracked role
+assignments and application during cleanup. The Azure CLI identity therefore
+needs Entra application create/delete permission and Azure role-assignment
+create/delete permission. These broad test-orchestrator permissions are not a
+production operator requirement.
 
 ## Required Azure Permissions
 
@@ -10,12 +21,16 @@ The operator needs Azure Resource Manager permissions. `OIDCIssuer` also needs A
 
 The required `--azure-subscription-id`, `--azure-resource-group-name`, and
 `--azure-location` startup flags define one platform-owned scope shared by
-`OIDCIssuer` storage and all `WorkloadIdentity` managed identities. Supply the
-values as literal manager Deployment arguments through an
-installation-specific Kustomize overlay. The committed base intentionally
-omits these installation-specific values and fails startup validation until an
-installation supplies its Azure scope. The `config/e2e` overlay demonstrates
-the structure with non-production test values.
+`OIDCIssuer` storage and all `WorkloadIdentity` managed identities. The Helm
+chart maps `azure.subscriptionId`, `azure.resourceGroupName`, and
+`azure.location` to those flags. These required, non-secret values are
+installation identity and cannot change during an in-place Helm upgrade.
+
+For Service Principal bootstrap, create a Secret in the release namespace with
+`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET`, then set only
+its name in `azure.credentials.existingSecret`. Do not put secret values in a
+Helm values file. See the [chart documentation](../dist/chart/README.md) for
+the workload-identity migration sequence.
 
 Required for reconciling the shared scope and `OIDCIssuer` Azure resources:
 
@@ -51,40 +66,17 @@ The operator disables shared key access on managed storage accounts and uploads 
 
 ## Signing Key Secret Access
 
-The default operator RBAC does not grant access to Secrets. Grant the operator access only to the exact Secret referenced by `spec.signingKey.secretRef` and, during rotation, the Secret referenced by `spec.signingKey.retiringSecretRef`.
+The Helm chart grants the operator cluster-wide `get` access to Secrets so a
+cluster-scoped `OIDCIssuer` can use active and retiring signing keys with
+arbitrary names and namespaces. It does not grant Secret `list` or `watch`.
+The operator uses a direct API reader and issues one named `GET` for each
+configured `spec.signingKey.secretRef` and
+`spec.signingKey.retiringSecretRef` during reconciliation.
 
-When rotating signing keys, keep the active and retiring signing keys in the same namespace when possible so access can be granted with one namespace-scoped Role. If a retiring key lives in a different namespace, create a separate Role and RoleBinding in that namespace for that exact Secret.
-
-Example:
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: azure-workload-identity-operator-signing-key-reader
-  namespace: openshift-kube-apiserver
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames:
-      - "bound-service-account-signing-key"
-      - "previous-bound-service-account-signing-key"
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: azure-workload-identity-operator-signing-key-reader
-  namespace: openshift-kube-apiserver
-subjects:
-  - kind: ServiceAccount
-    name: azure-workload-identity-operator-controller-manager
-    namespace: azure-workload-identity-operator-system
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: azure-workload-identity-operator-signing-key-reader
-```
+Anyone allowed to create or update `OIDCIssuer` can therefore cause this
+cluster-trusted controller to retrieve a Secret. Treat OIDCIssuer
+administration as a cluster-administrator capability; the chart's optional
+user-facing RBAC helpers are disabled by default.
 
 ## OIDCIssuer Refresh
 
@@ -96,7 +88,7 @@ To rotate safely:
 2. Change `spec.signingKey.secretRef` to the new active signing key.
 3. Wait until the operator publishes both keys and `.status.signingKeys` shows the old key as `Retiring`.
 4. Keep the retiring key configured for at least the longest possible service account token lifetime, plus enough time for one successful reconciliation.
-5. Remove the retiring key reference and its Secret RBAC after tokens signed by that key can no longer be valid.
+5. Remove the retiring key reference and Secret after tokens signed by that key can no longer be valid.
 
 The operator does not automatically decide when a retiring key is safe to remove. That decision depends on the cluster token lifetime and any external consumers that may cache tokens or JWKS.
 
@@ -216,4 +208,15 @@ as a different `workload-identity-uid` or an operator-managed ServiceAccount
 without an owner UID, are rejected. With deletion policy `Delete`, a `Created`
 ServiceAccount is deleted and an `Adopted` ServiceAccount is retained.
 
-The default manager RBAC grants ServiceAccount `get/list/watch/create/update/patch/delete`. It still does not grant Secret access.
+The default manager RBAC grants ServiceAccount
+`get/list/watch/create/update/patch/delete`. Its separate Secret rule grants
+only `get`, as described in Signing Key Secret Access above.
+
+## Bundled Azure Workload Identity Webhook RBAC
+
+The chart runs the bundled mutating webhook in the reserved
+`microsoft-azure-workload-identity-webhook-system` namespace. Its ServiceAccount has only
+cluster-wide `get/list/watch` access to ServiceAccounts, which it needs to read
+the annotations for Pods selected for mutation. cert-manager owns its serving
+Secret and CA injection. The webhook ServiceAccount has no Secret permissions
+and cannot update `MutatingWebhookConfiguration` objects.

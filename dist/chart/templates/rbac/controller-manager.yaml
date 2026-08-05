@@ -1,0 +1,18 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
+    {{- with .Values.serviceAccount.labels }}
+    {{- with omit . "app.kubernetes.io/instance" "app.kubernetes.io/managed-by" "app.kubernetes.io/name" "app.kubernetes.io/version" "helm.sh/chart" }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- end }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  name: azure-workload-identity-operator-controller-manager
+  namespace: {{ .Release.Namespace }}
+{{- end }}

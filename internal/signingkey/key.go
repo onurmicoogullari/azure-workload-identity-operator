@@ -22,7 +22,7 @@ type PublicKey struct {
 	State azworkloadidentityv1alpha1.SigningKeyState
 }
 
-func PublicKeysPEM(ctx context.Context, c client.Client, source azworkloadidentityv1alpha1.SigningKeySource) ([]PublicKey, error) {
+func PublicKeysPEM(ctx context.Context, reader client.Reader, source azworkloadidentityv1alpha1.SigningKeySource) ([]PublicKey, error) {
 	refs := []azworkloadidentityv1alpha1.SecretKeyReference{source.SecretRef}
 	if source.RetiringSecretRef != nil {
 		refs = append(refs, *source.RetiringSecretRef)
@@ -30,7 +30,7 @@ func PublicKeysPEM(ctx context.Context, c client.Client, source azworkloadidenti
 	keys := make([]PublicKey, 0, len(refs))
 
 	for i, ref := range refs {
-		keyPEM, err := PublicKeyPEM(ctx, c, ref)
+		keyPEM, err := PublicKeyPEM(ctx, reader, ref)
 		if err != nil {
 			return nil, err
 		}
@@ -45,10 +45,10 @@ func PublicKeysPEM(ctx context.Context, c client.Client, source azworkloadidenti
 	return keys, nil
 }
 
-func PublicKeyPEM(ctx context.Context, c client.Client, ref azworkloadidentityv1alpha1.SecretKeyReference) ([]byte, error) {
+func PublicKeyPEM(ctx context.Context, reader client.Reader, ref azworkloadidentityv1alpha1.SecretKeyReference) ([]byte, error) {
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Name: ref.Name, Namespace: ref.Namespace}
-	if err := c.Get(ctx, key, secret); err != nil {
+	if err := reader.Get(ctx, key, secret); err != nil {
 		return nil, fmt.Errorf("get signing key secret %s/%s: %w", ref.Namespace, ref.Name, err)
 	}
 

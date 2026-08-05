@@ -30,6 +30,12 @@ go.work.sum
 # env file
 .env
 
+# Kubebuilder Helm plugin input; the maintained distribution is dist/chart.
+/dist/install.yaml
+/dist/candidate-chart/
+/dist/packages/
+/dist/chart/charts/*.tgz
+
 # Editor/IDE
 # .idea/
 # .vscode/

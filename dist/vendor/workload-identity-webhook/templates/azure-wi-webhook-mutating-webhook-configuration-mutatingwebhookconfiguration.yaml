@@ -1,0 +1,44 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: azure-wi-webhook-mutating-webhook-configuration
+  annotations:
+    {{ if .Values.disableCertRotation -}}
+    cert-manager.io/inject-ca-from: {{ printf "%s/%s" (include "workload-identity-webhook.namespace" .) .Values.certManagerCertificateName | quote }}
+    {{- end }}
+    {{- with omit .Values.mutatingWebhookAnnotations "cert-manager.io/inject-ca-from" }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  labels:
+    app: {{ include "workload-identity-webhook.name" . | quote }}
+    azure-workload-identity.io/system: "true"
+    chart: {{ include "workload-identity-webhook.name" . | quote }}
+    release: {{ .Release.Name | quote }}
+webhooks:
+  - name: mutation.azure-workload-identity.io
+    admissionReviewVersions:
+      - v1
+      - v1beta1
+    clientConfig:
+      service:
+        name: azure-wi-webhook-webhook-service
+        namespace: {{ include "workload-identity-webhook.namespace" . }}
+        path: /mutate-v1-pod
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    namespaceSelector:
+      {{- toYaml .Values.mutatingWebhookNamespaceSelector | nindent 6 }}
+    objectSelector:
+      matchLabels:
+        azure.workload.identity/use: "true"
+    reinvocationPolicy: IfNeeded
+    rules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+        resources:
+          - pods
+    sideEffects: None

@@ -1,0 +1,200 @@
+name: Promote Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Successful Release Candidate workflow run ID
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: promote-release
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/onurmicoogullari/azure-workload-identity-operator
+  HELM_VERSION: v4.2.3
+  CANDIDATE_DIR: ${{ github.workspace }}/../release-candidate
+
+jobs:
+  promote:
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate candidate run ID
+        shell: bash
+        env:
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: '[[ $CANDIDATE_RUN_ID =~ ^[0-9]+$ ]]'
+
+      - name: Download immutable candidate bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: >-
+          gh run download "$CANDIDATE_RUN_ID"
+          --repo "$GITHUB_REPOSITORY"
+          --name release-candidate
+          --dir "$CANDIDATE_DIR"
+
+      - name: Read candidate identity
+        id: identity
+        shell: bash
+        run: |
+          (cd "$CANDIDATE_DIR" && sha256sum --check SHA256SUMS)
+          candidate_commit=$(jq -r .commit "$CANDIDATE_DIR/candidate.json")
+          candidate_image_digest=$(jq -r .imageDigest "$CANDIDATE_DIR/candidate.json")
+          [[ $candidate_commit =~ ^[a-f0-9]{40}$ ]]
+          [[ $candidate_image_digest =~ ^sha256:[a-f0-9]{64}$ ]]
+          {
+            echo "commit=$candidate_commit"
+            echo "image_digest=$candidate_image_digest"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Clone the validated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.identity.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable candidate bundle
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_COMMIT: ${{ steps.identity.outputs.commit }}
+          CANDIDATE_IMAGE_DIGEST: ${{ steps.identity.outputs.image_digest }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_COMMIT"
+          test "$(jq -r .commit "$CANDIDATE_DIR/candidate.json")" = "$CANDIDATE_COMMIT"
+          test "$(jq -r .imageRepository "$CANDIDATE_DIR/candidate.json")" = "$IMAGE"
+          test "$(jq -r .imageDigest "$CANDIDATE_DIR/candidate.json")" = "$CANDIDATE_IMAGE_DIGEST"
+          version=$(jq -r .version "$CANDIDATE_DIR/candidate.json")
+          chart_file=$(jq -r .chartFile "$CANDIDATE_DIR/candidate.json")
+          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ $chart_file == "azure-workload-identity-operator-${version}.tgz" ]]
+          helm_values=$(tar -xOzf "$CANDIDATE_DIR/$chart_file" \
+            azure-workload-identity-operator/values.yaml)
+          grep -Fq "    repository: $IMAGE" <<<"$helm_values"
+          grep -Fq "    digest: \"$CANDIDATE_IMAGE_DIGEST\"" <<<"$helm_values"
+          existing_tag=$(git ls-remote origin "refs/tags/v$version" | awk '{print $1}')
+          if [[ -n $existing_tag && $existing_tag != "$CANDIDATE_COMMIT" ]]; then
+            echo "v$version already points to $existing_tag" >&2
+            exit 1
+          fi
+          if [[ -n $existing_tag ]]; then
+            echo "Reusing existing v$version tag at validated commit $CANDIDATE_COMMIT"
+          fi
+          {
+            echo "version=$version"
+            echo "chart_file=$chart_file"
+            echo "tag_preexisting=$([[ -n $existing_tag ]] && echo true || echo false)"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Claim the immutable release version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_COMMIT: ${{ steps.identity.outputs.commit }}
+          VERSION: ${{ steps.candidate.outputs.version }}
+          TAG_PREEXISTING: ${{ steps.candidate.outputs.tag_preexisting }}
+        run: |
+          if [[ $TAG_PREEXISTING != true ]]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/v$VERSION" \
+              -f "sha=$CANDIDATE_COMMIT" >/dev/null
+          fi
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote the validated image digest
+        shell: bash
+        env:
+          CANDIDATE_IMAGE_DIGEST: ${{ steps.identity.outputs.image_digest }}
+          VERSION: ${{ steps.candidate.outputs.version }}
+        run: |
+          if output=$(docker buildx imagetools inspect "$IMAGE:v$VERSION" 2>&1); then
+            existing_digest=$(awk '/^Digest:/ {print $2; exit}' <<<"$output")
+            if [[ $existing_digest != "$CANDIDATE_IMAGE_DIGEST" ]]; then
+              echo "$IMAGE:v$VERSION already points to $existing_digest; expected $CANDIDATE_IMAGE_DIGEST" >&2
+              exit 1
+            fi
+            echo "Reusing existing $IMAGE:v$VERSION tag at validated digest $CANDIDATE_IMAGE_DIGEST"
+          else
+            if ! grep -Eiq 'manifest unknown|not found' <<<"$output"; then
+              printf '%s\n' "$output" >&2
+              exit 1
+            fi
+            docker buildx imagetools create \
+              --tag "$IMAGE:v$VERSION" \
+              "$IMAGE@$CANDIDATE_IMAGE_DIGEST"
+          fi
+
+      - name: Install pinned Helm
+        shell: bash
+        run: |
+          archive="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/${archive}"
+          curl -fsSLO "https://get.helm.sh/${archive}.sha256sum"
+          sha256sum --check "${archive}.sha256sum"
+          tar -xzf "$archive"
+          sudo install linux-amd64/helm /usr/local/bin/helm
+
+      - name: Promote the validated chart package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.candidate.outputs.version }}
+          CHART_FILE: ${{ steps.candidate.outputs.chart_file }}
+        run: |
+          printf '%s' "$GH_TOKEN" | helm registry login ghcr.io \
+            --username "$GITHUB_ACTOR" \
+            --password-stdin
+          mkdir existing-chart
+          if output=$(helm pull oci://ghcr.io/onurmicoogullari/charts/azure-workload-identity-operator \
+            --version "$VERSION" --destination existing-chart 2>&1); then
+            cmp "$CANDIDATE_DIR/$CHART_FILE" "existing-chart/$CHART_FILE"
+          else
+            if ! grep -Eiq 'manifest unknown|not found' <<<"$output"; then
+              printf '%s\n' "$output" >&2
+              exit 1
+            fi
+            helm push "$CANDIDATE_DIR/$CHART_FILE" oci://ghcr.io/onurmicoogullari/charts
+          fi
+
+      - name: Create or verify GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.candidate.outputs.version }}
+          CHART_FILE: ${{ steps.candidate.outputs.chart_file }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            mkdir existing-release
+            if gh release download "v$VERSION" --pattern "$CHART_FILE" \
+              --dir existing-release 2>/dev/null; then
+              cmp "$CANDIDATE_DIR/$CHART_FILE" "existing-release/$CHART_FILE"
+            else
+              gh release upload "v$VERSION" "$CANDIDATE_DIR/$CHART_FILE"
+            fi
+          else
+            gh release create "v$VERSION" "$CANDIDATE_DIR/$CHART_FILE" \
+              --verify-tag \
+              --generate-notes \
+              --title "v$VERSION"
+          fi

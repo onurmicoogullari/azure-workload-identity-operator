@@ -1,0 +1,15 @@
+{{- if .Values.config.create }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: azure-wi-webhook-config
+  namespace: {{ include "workload-identity-webhook.namespace" . }}
+  labels:
+    app: {{ include "workload-identity-webhook.name" . | quote }}
+    azure-workload-identity.io/system: "true"
+    chart: {{ include "workload-identity-webhook.name" . | quote }}
+    release: {{ .Release.Name | quote }}
+data:
+  AZURE_ENVIRONMENT: {{ .Values.azureEnvironment | default "AzurePublicCloud" | quote }}
+  AZURE_TENANT_ID: {{ required "A valid .Values.azureTenantID entry required" .Values.azureTenantID | quote }}
+{{- end }}

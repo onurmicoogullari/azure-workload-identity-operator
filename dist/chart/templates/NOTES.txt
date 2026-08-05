@@ -1,0 +1,17 @@
+The Azure Workload Identity Operator is installed in {{ .Release.Namespace }}.
+
+Verify both controllers and the validating webhook:
+
+  kubectl get deployments,pods -n {{ .Release.Namespace }}
+  kubectl get validatingwebhookconfiguration azure-workload-identity-operator-validating-webhook-configuration
+{{- if .Values.azureWorkloadIdentityWebhook.enabled }}
+  kubectl get deployments,pods -n {{ .Values.azureWorkloadIdentityWebhook.namespaceOverride }}
+  kubectl get mutatingwebhookconfiguration azure-wi-webhook-mutating-webhook-configuration
+{{- end }}
+
+The chart retains its CRDs and Azure-scope identity ConfigMap during uninstall.
+Delete them manually only after all custom resources have been removed or
+intentionally abandoned.
+
+This chart uses stable, cluster-wide resource names and supports one release
+per cluster. Moving the release to another namespace is a migration.

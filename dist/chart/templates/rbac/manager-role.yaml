@@ -1,0 +1,89 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "azure-workload-identity-operator.resourceName" (dict "suffix" "manager-role" "context" $) }}
+  labels:
+    {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - authentications
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - clusteroperators
+  verbs:
+  - get
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - workloadidentity.azure.micosolutions.se
+  resources:
+  - oidcissuers
+  - workloadidentities
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - workloadidentity.azure.micosolutions.se
+  resources:
+  - oidcissuers/finalizers
+  - workloadidentities/finalizers
+  - workloadidentityrecoveries/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - workloadidentity.azure.micosolutions.se
+  resources:
+  - oidcissuers/status
+  - workloadidentities/status
+  - workloadidentityrecoveries/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - workloadidentity.azure.micosolutions.se
+  resources:
+  - workloadidentityrecoveries
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch

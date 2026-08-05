@@ -93,7 +93,7 @@ All cluster operators should be `Available=True`, `Progressing=False`, and
 Run the OpenShift e2e script from the repository root:
 
 ```bash
-./e2e/openshift/e2e-test.sh
+./test/e2e/openshift/e2e-test.sh
 ```
 
 Always run `eval $(crc oc-env)` in the shell that invokes `oc` or the e2e
@@ -101,16 +101,17 @@ script. The script uses the current kubeconfig/context, so verify `oc whoami`
 is `kubeadmin` before starting.
 
 The script uses the current `oc` session and active Azure CLI account. It
-creates real Azure resources, installs the Azure Workload Identity webhook,
-runs the operator locally, mutates `Authentication/cluster`, builds an
-OpenShift test image, validates Key Vault access, and verifies cleanup. If the
-script exposes a bug, fix it and repeat from `crc delete -f` so each e2e pass
-starts from a clean CRC cluster.
+creates real Azure resources and an ephemeral operator Service Principal,
+builds the operator into the OpenShift internal registry, installs the complete
+Helm release and bundled Azure Workload Identity webhook, mutates
+`Authentication/cluster`, builds an OpenShift test image, validates Key Vault
+access, and verifies cleanup. If the script exposes a bug, fix it and repeat
+from `crc delete -f` so each e2e pass starts from a clean CRC cluster.
 
 When changing the OpenShift e2e script flow, assertions, setup, or cleanup,
-consider whether `e2e/openshift/README.md` should be updated too. In
+consider whether `test/e2e/openshift/README.md` should be updated too. In
 particular, keep the "What The Script Tests, Step By Step" section in sync with
-the behavior exercised by `e2e/openshift/e2e-test.sh`.
+the behavior exercised by `test/e2e/openshift/e2e-test.sh`.
 
 Operational notes from a successful CRC run:
 
@@ -140,12 +141,14 @@ Operational notes from a successful CRC run:
 - Closing the CRC keeper session after the test can stop or confuse local CRC
   state. After verification, run `crc setup` if needed and confirm `crc status`
   reports the expected stopped/running state.
-- After a successful script run, verify the script cleaned up Azure resource
-  groups created by the default configuration:
+- Each script run appends a generated eight-character hexadecimal run ID to
+  both default Azure resource-group names. The cleanup flow waits for and
+  verifies deletion of those exact groups. To verify independently, copy the
+  generated names from the script output and run:
 
   ```bash
-  az group exists -n rg-azwi-crc-platform-test
-  az group exists -n rg-azwi-crc-kv-test
+  az group exists -n <generated-platform-resource-group>
+  az group exists -n <generated-key-vault-resource-group>
   ```
 
   Both commands should return `false`.

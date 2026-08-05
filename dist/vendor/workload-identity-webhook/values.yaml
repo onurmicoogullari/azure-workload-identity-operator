@@ -1,0 +1,52 @@
+replicaCount: 2
+namespaceOverride: ""
+disableCertRotation: false
+certManagerCertificateName: ""
+image:
+  repository: mcr.microsoft.com/oss/v2/azure/workload-identity/webhook
+  release: v1.6.0
+  digest: sha256:adb770248261c98c75696c6899017dbde4b07aaea09fc2f86e80acc98aeb452b
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+nodeSelector:
+  kubernetes.io/os: linux
+resources:
+  limits:
+    cpu: 100m
+    memory: 30Mi
+  requests:
+    cpu: 100m
+    memory: 20Mi
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+service:
+  type: ClusterIP
+azureEnvironment: AzurePublicCloud
+azureTenantID: ""
+config:
+  create: true
+logLevel: info
+metricsAddr: ":8095"
+metricsBackend: prometheus
+priorityClassName: system-cluster-critical
+mutatingWebhookAnnotations: {}
+podLabels: {}
+podAnnotations: {}
+mutatingWebhookNamespaceSelector: {}
+podDisruptionBudget:
+  minAvailable: 1
+customTokenEndpoint:
+  annotationSuffix: ""
+  audience: ""

@@ -1,0 +1,23 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: azure-wi-webhook-controller-manager
+  namespace: {{ include "workload-identity-webhook.namespace" . }}
+  labels:
+    app: {{ include "workload-identity-webhook.name" . | quote }}
+    azure-workload-identity.io/system: "true"
+    chart: {{ include "workload-identity-webhook.name" . | quote }}
+    release: {{ .Release.Name | quote }}
+spec:
+  {{- with .Values.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ . }}
+  {{- end }}
+  {{- with .Values.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ . }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app: {{ include "workload-identity-webhook.name" . | quote }}
+      azure-workload-identity.io/system: "true"
+      chart: {{ include "workload-identity-webhook.name" . | quote }}
+      release: {{ .Release.Name | quote }}
