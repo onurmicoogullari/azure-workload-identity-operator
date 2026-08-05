@@ -8,6 +8,8 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"slices"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -81,12 +83,12 @@ func TestPublicKeysPEMIncludesActiveAndRetiringKeys(t *testing.T) {
 
 	activeRef := azworkloadidentityv1alpha1.SecretKeyReference{Name: "active-key", Namespace: testSigningKeyNamespace, Key: testSigningKeyDataKey}
 	retiringRef := azworkloadidentityv1alpha1.SecretKeyReference{Name: "retiring-key", Namespace: testSigningKeyNamespace, Key: testSigningKeyDataKey}
-	k8sClient := fakeClient(t,
+	reader := &getOnlyRecordingReader{delegate: fakeClient(t,
 		signingKeySecretForRef(activeRef, publicKeyPEM(t, &activeKey.PublicKey)),
 		signingKeySecretForRef(retiringRef, publicKeyPEM(t, &retiringKey.PublicKey)),
-	)
+	)}
 
-	keys, err := PublicKeysPEM(context.Background(), k8sClient, azworkloadidentityv1alpha1.SigningKeySource{
+	keys, err := PublicKeysPEM(context.Background(), reader, azworkloadidentityv1alpha1.SigningKeySource{
 		SecretRef:         activeRef,
 		RetiringSecretRef: &retiringRef,
 	})
@@ -96,6 +98,16 @@ func TestPublicKeysPEMIncludesActiveAndRetiringKeys(t *testing.T) {
 
 	if len(keys) != 2 {
 		t.Fatalf("keys = %d", len(keys))
+	}
+	if reader.listCalls != 0 {
+		t.Fatalf("secret list calls = %d, want 0", reader.listCalls)
+	}
+	expectedGets := []client.ObjectKey{
+		{Name: activeRef.Name, Namespace: activeRef.Namespace},
+		{Name: retiringRef.Name, Namespace: retiringRef.Namespace},
+	}
+	if !slices.Equal(reader.gets, expectedGets) {
+		t.Fatalf("secret get calls = %v", reader.gets)
 	}
 	if keys[0].State != azworkloadidentityv1alpha1.SigningKeyStateActive {
 		t.Fatalf("active state = %q", keys[0].State)
@@ -162,4 +174,29 @@ func fakeClient(t *testing.T, objects ...runtime.Object) client.Client {
 		t.Fatal(err)
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objects...).Build()
+}
+
+type getOnlyRecordingReader struct {
+	delegate  client.Reader
+	gets      []client.ObjectKey
+	listCalls int
+}
+
+func (r *getOnlyRecordingReader) Get(
+	ctx context.Context,
+	key client.ObjectKey,
+	obj client.Object,
+	opts ...client.GetOption,
+) error {
+	r.gets = append(r.gets, key)
+	return r.delegate.Get(ctx, key, obj, opts...)
+}
+
+func (r *getOnlyRecordingReader) List(
+	context.Context,
+	client.ObjectList,
+	...client.ListOption,
+) error {
+	r.listCalls++
+	return errors.New("secret list is not allowed")
 }

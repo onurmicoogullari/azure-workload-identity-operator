@@ -1,0 +1,24 @@
+{{- if .Values.rbac.helpers.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/name: {{ include "azure-workload-identity-operator.name" . }}
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  name: {{ include "azure-workload-identity-operator.resourceName" (dict "suffix" "oidcissuer-admin-role" "context" $) }}
+rules:
+- apiGroups:
+  - workloadidentity.azure.micosolutions.se
+  resources:
+  - oidcissuers
+  verbs:
+  - '*'
+- apiGroups:
+  - workloadidentity.azure.micosolutions.se
+  resources:
+  - oidcissuers/status
+  verbs:
+  - get
+{{- end }}

@@ -1,0 +1,6 @@
+dependencies:
+- name: workload-identity-webhook
+  repository: file://../vendor/workload-identity-webhook
+  version: 1.6.0-azwi.2
+digest: sha256:df58627e90cbf9f7919a6f87cb4749a4c3cd94d3dafb7b5ef2a468d76769ec7c
+generated: "2026-08-03T16:03:06.182435+02:00"

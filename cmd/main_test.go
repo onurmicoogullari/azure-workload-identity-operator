@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"testing"
@@ -24,7 +25,37 @@ import (
 
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/azure"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/controller"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 )
+
+type fakeHealthCheckRegistrar struct {
+	healthChecks map[string]healthz.Checker
+	readyChecks  map[string]healthz.Checker
+	addError     error
+}
+
+func (f *fakeHealthCheckRegistrar) AddHealthzCheck(name string, check healthz.Checker) error {
+	if f.addError != nil {
+		return f.addError
+	}
+	f.healthChecks[name] = check
+	return nil
+}
+
+func (f *fakeHealthCheckRegistrar) AddReadyzCheck(name string, check healthz.Checker) error {
+	if f.addError != nil {
+		return f.addError
+	}
+	f.readyChecks[name] = check
+	return nil
+}
+
+func newFakeHealthCheckRegistrar() *fakeHealthCheckRegistrar {
+	return &fakeHealthCheckRegistrar{
+		healthChecks: make(map[string]healthz.Checker),
+		readyChecks:  make(map[string]healthz.Checker),
+	}
+}
 
 func TestOIDCIssuerRefreshIntervalFlags(t *testing.T) {
 	tests := []struct {
@@ -107,6 +138,48 @@ func TestAzureScopeFlagsAreRequiredAndProduceValidatedScope(t *testing.T) {
 		}
 		if _, err := azure.NewScope(values.subscriptionID, values.resourceGroupName, values.location); err != nil {
 			t.Fatal(err)
+		}
+	})
+}
+
+func TestRegisterHealthChecks(t *testing.T) {
+	t.Run("registers webhook readiness when enabled", func(t *testing.T) {
+		registrar := newFakeHealthCheckRegistrar()
+
+		if err := registerHealthChecks(registrar, healthz.Ping); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, ok := registrar.healthChecks["healthz"]; !ok {
+			t.Fatal("health check was not registered")
+		}
+		if _, ok := registrar.readyChecks["readyz"]; !ok {
+			t.Fatal("base readiness check was not registered")
+		}
+		if _, ok := registrar.readyChecks["webhook"]; !ok {
+			t.Fatal("webhook readiness check was not registered")
+		}
+	})
+
+	t.Run("omits webhook readiness when disabled", func(t *testing.T) {
+		registrar := newFakeHealthCheckRegistrar()
+
+		if err := registerHealthChecks(registrar, nil); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, ok := registrar.readyChecks["webhook"]; ok {
+			t.Fatal("webhook readiness check was registered while webhooks were disabled")
+		}
+	})
+
+	t.Run("returns registration errors", func(t *testing.T) {
+		wantErr := errors.New("registration failed")
+		registrar := newFakeHealthCheckRegistrar()
+		registrar.addError = wantErr
+
+		if err := registerHealthChecks(registrar, nil); !errors.Is(err, wantErr) {
+			t.Fatalf("registerHealthChecks() error = %v, want %v", err, wantErr)
 		}
 	})
 }

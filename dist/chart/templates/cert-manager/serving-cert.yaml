@@ -1,0 +1,17 @@
+{{- if eq .Values.webhook.certificates.provider "certManager" }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: azure-workload-identity-operator-serving-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
+spec:
+  dnsNames:
+    - azure-workload-identity-operator-webhook-service.{{ .Release.Namespace }}.svc
+    - azure-workload-identity-operator-webhook-service.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: azure-workload-identity-operator-selfsigned-issuer
+  secretName: {{ .Values.webhook.certificates.certManager.secretName }}
+{{- end }}

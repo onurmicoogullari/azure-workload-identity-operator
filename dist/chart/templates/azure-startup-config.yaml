@@ -1,0 +1,29 @@
+{{- $name := "azure-workload-identity-operator-startup-config" -}}
+{{- $existing := lookup "v1" "ConfigMap" .Release.Namespace $name -}}
+{{- if $existing -}}
+  {{- $subscriptionID := index $existing.data "subscriptionId" | default "" -}}
+  {{- $resourceGroupName := index $existing.data "resourceGroupName" | default "" -}}
+  {{- $location := index $existing.data "location" | default "" -}}
+  {{- if ne $subscriptionID .Values.azure.subscriptionId -}}
+    {{- fail "azure.subscriptionId is immutable after installation; migrate the release to change Azure scope" -}}
+  {{- end -}}
+  {{- if ne $resourceGroupName .Values.azure.resourceGroupName -}}
+    {{- fail "azure.resourceGroupName is immutable after installation; migrate the release to change Azure scope" -}}
+  {{- end -}}
+  {{- if ne $location .Values.azure.location -}}
+    {{- fail "azure.location is immutable after installation; migrate the release to change Azure scope" -}}
+  {{- end -}}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
+data:
+  subscriptionId: {{ required "azure.subscriptionId is required" .Values.azure.subscriptionId | quote }}
+  resourceGroupName: {{ required "azure.resourceGroupName is required" .Values.azure.resourceGroupName | quote }}
+  location: {{ required "azure.location is required" .Values.azure.location | quote }}

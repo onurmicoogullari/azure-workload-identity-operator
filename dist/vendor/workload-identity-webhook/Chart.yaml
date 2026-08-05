@@ -1,0 +1,13 @@
+apiVersion: v2
+name: workload-identity-webhook
+description: Vendored Azure Workload Identity webhook chart with OpenShift restricted SCC compatibility
+type: application
+version: 1.6.0-azwi.2
+appVersion: v1.6.0
+home: https://github.com/Azure/azure-workload-identity
+sources:
+  - https://github.com/Azure/azure-workload-identity/tree/v1.6.0/charts/workload-identity-webhook
+annotations:
+  azure-workload-identity-operator.io/upstream-chart-version: "1.6.0"
+  azure-workload-identity-operator.io/upstream-source-ref: "v1.6.0"
+  azure-workload-identity-operator.io/vendor-delta: "namespace override, external certificate mode, config ownership, and OpenShift restricted SCC security contexts"

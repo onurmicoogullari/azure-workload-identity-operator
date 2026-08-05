@@ -1,11 +1,11 @@
 ---
 name: run-crc-e2e
-description: Reset a disposable local Red Hat CodeReady Containers (CRC) cluster, keep its VM session alive, authenticate to OpenShift as kubeadmin, run this repository's OpenShift/Azure end-to-end test, and verify cleanup. Use when asked to run, rerun, validate, or troubleshoot `e2e/openshift/e2e-test.sh` against CRC.
+description: Reset a disposable local Red Hat CodeReady Containers (CRC) cluster, keep its VM session alive, authenticate to OpenShift as kubeadmin, run this repository's OpenShift/Azure end-to-end test, and verify cleanup. Use when asked to run, rerun, validate, or troubleshoot `test/e2e/openshift/e2e-test.sh` against CRC.
 ---
 
 # Run CRC E2E
 
-Use a fresh disposable CRC cluster. The e2e script mutates OpenShift authentication, creates real Azure resources, runs the operator locally, and deletes its test resources.
+Use a fresh disposable CRC cluster. The e2e script mutates OpenShift authentication, creates real Azure resources and an ephemeral operator identity, installs the packaged Helm release, and deletes its test resources.
 
 ## Preconditions
 
@@ -54,7 +54,7 @@ Keep the CRC keeper session open. From a separate shell at the repository root, 
 ```bash
 eval $(crc oc-env)
 oc login -u kubeadmin -p '<fresh-password>' https://api.crc.testing:6443
-./e2e/openshift/e2e-test.sh
+./test/e2e/openshift/e2e-test.sh
 ```
 
 Poll long-running output regularly. The script can be quiet while OpenShift rolls API servers or Azure RBAC propagates. Before diagnosing a timeout, inspect the cluster state and the operator log path printed by the script.

@@ -1,0 +1,84 @@
+name: Test Helm Chart
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+env:
+  CERT_MANAGER_VERSION: v1.21.1
+  HELM_VERSION: v4.2.3
+  KIND_VERSION: v0.32.0
+  KIND_NODE_IMAGE: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+
+jobs:
+  test-chart:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install pinned Helm
+        shell: bash
+        run: |
+          archive="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/${archive}"
+          curl -fsSLO "https://get.helm.sh/${archive}.sha256sum"
+          sha256sum --check "${archive}.sha256sum"
+          tar -xzf "$archive"
+          sudo install linux-amd64/helm /usr/local/bin/helm
+          helm version
+
+      - name: Install pinned Kind
+        shell: bash
+        run: |
+          kind_asset="kind-linux-$(go env GOARCH)"
+          curl -fsSLO "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/${kind_asset}"
+          curl -fsSLO "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/${kind_asset}.sha256sum"
+          sha256sum --check "${kind_asset}.sha256sum"
+          sudo install "$kind_asset" /usr/local/bin/kind
+          kind version
+
+      - name: Verify chart rendering and value contracts
+        run: make helm-lint
+
+      - name: Build and load operator image
+        env:
+          IMG: controller:latest
+        run: |
+          kind create cluster --name chart-test --image "$KIND_NODE_IMAGE"
+          make docker-build IMG="$IMG"
+          kind load docker-image "$IMG" --name chart-test
+
+      - name: Install cert-manager
+        run: |
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo update jetstack
+          helm upgrade --install cert-manager jetstack/cert-manager \
+            --version "$CERT_MANAGER_VERSION" \
+            --namespace cert-manager \
+            --create-namespace \
+            --set crds.enabled=true \
+            --wait \
+            --timeout 5m
+
+      - name: Run chart integration tests
+        run: make test-chart-integration
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get all -A || true
+          kubectl get certificates,issuers -A || true
+          kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations || true
+          kubectl get events -A --sort-by=.lastTimestamp || true

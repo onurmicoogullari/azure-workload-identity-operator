@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: azure-wi-webhook-controller-manager
+  namespace: {{ include "workload-identity-webhook.namespace" . }}
+  labels:
+    app: {{ include "workload-identity-webhook.name" . | quote }}
+    azure-workload-identity.io/system: "true"
+    chart: {{ include "workload-identity-webhook.name" . | quote }}
+    release: {{ .Release.Name | quote }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: {{ include "workload-identity-webhook.name" . | quote }}
+      azure-workload-identity.io/system: "true"
+      chart: {{ include "workload-identity-webhook.name" . | quote }}
+      release: {{ .Release.Name | quote }}
+  template:
+    metadata:
+      annotations:
+        {{- toYaml .Values.podAnnotations | nindent 8 }}
+      labels:
+        {{- include "workload-identity-webhook.podLabels" . }}
+        app: {{ include "workload-identity-webhook.name" . | quote }}
+        azure-workload-identity.io/system: "true"
+        chart: {{ include "workload-identity-webhook.name" . | quote }}
+        release: {{ .Release.Name | quote }}
+    spec:
+      serviceAccountName: azure-wi-webhook-admin
+      priorityClassName: {{ .Values.priorityClassName }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      topologySpreadConstraints:
+        {{- toYaml .Values.topologySpreadConstraints | nindent 8 }}
+      containers:
+        - name: manager
+          command:
+            - /manager
+          args:
+            - --log-level={{ .Values.logLevel }}
+            - --metrics-addr={{ .Values.metricsAddr }}
+            - --metrics-backend={{ .Values.metricsBackend }}
+            {{- if .Values.disableCertRotation }}
+            - --disable-cert-rotation=true
+            {{- end }}
+            {{- if .Values.customTokenEndpoint.annotationSuffix }}
+            - --custom-token-endpoint-annotation-suffix={{ .Values.customTokenEndpoint.annotationSuffix }}
+            {{- end }}
+            {{- if .Values.customTokenEndpoint.audience }}
+            - --custom-token-endpoint-audience={{ .Values.customTokenEndpoint.audience }}
+            {{- end }}
+          image: {{ if .Values.image.digest }}{{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}{{ else }}{{ printf "%s:%s" .Values.image.repository .Values.image.release | quote }}{{ end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+          envFrom:
+            - configMapRef:
+                name: azure-wi-webhook-config
+          ports:
+            - name: metrics
+              containerPort: {{ trimPrefix ":" .Values.metricsAddr }}
+              protocol: TCP
+            - name: webhook-server
+              containerPort: 9443
+              protocol: TCP
+            - name: healthz
+              containerPort: 9440
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: cert
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: cert
+          secret:
+            defaultMode: 420
+            secretName: azure-wi-webhook-server-cert

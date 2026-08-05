@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: azure-workload-identity-operator-controller-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
+    control-plane: controller-manager
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "azure-workload-identity-operator.name" . }}
+      control-plane: controller-manager

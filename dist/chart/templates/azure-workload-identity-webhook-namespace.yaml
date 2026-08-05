@@ -1,0 +1,24 @@
+{{- if .Values.azureWorkloadIdentityWebhook.enabled }}
+{{- if ne .Values.azureWorkloadIdentityWebhook.namespaceOverride "microsoft-azure-workload-identity-webhook-system" }}
+{{- fail "azureWorkloadIdentityWebhook.namespaceOverride is immutable and must be microsoft-azure-workload-identity-webhook-system" }}
+{{- end }}
+{{- if not .Values.azureWorkloadIdentityWebhook.disableCertRotation }}
+{{- fail "azureWorkloadIdentityWebhook.disableCertRotation must remain true; cert-manager owns certificate rotation" }}
+{{- end }}
+{{- if ne .Values.azureWorkloadIdentityWebhook.certManagerCertificateName "azure-wi-webhook-serving-cert" }}
+{{- fail "azureWorkloadIdentityWebhook.certManagerCertificateName is immutable and must be azure-wi-webhook-serving-cert" }}
+{{- end }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.azureWorkloadIdentityWebhook.namespaceOverride }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    app.kubernetes.io/name: azure-workload-identity-webhook
+    app.kubernetes.io/part-of: azure-workload-identity-operator
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+{{- end }}

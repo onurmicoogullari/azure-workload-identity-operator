@@ -79,6 +79,7 @@ type OIDCIssuerReconciler struct {
 // +kubebuilder:rbac:groups=workloadidentity.azure.micosolutions.se,resources=workloadidentities,verbs=get;list;watch
 // +kubebuilder:rbac:groups=config.openshift.io,resources=authentications,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=config.openshift.io,resources=clusteroperators,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 func (r *OIDCIssuerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)

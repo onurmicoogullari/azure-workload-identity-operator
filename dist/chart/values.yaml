@@ -1,0 +1,172 @@
+# Required, non-secret installation identity. Changing subscriptionId,
+# resourceGroupName, or location after installation requires a migration.
+azure:
+  tenantId: ""
+  subscriptionId: ""
+  resourceGroupName: ""
+  location: ""
+  credentials:
+    # Existing Secret with AZURE_CLIENT_ID, AZURE_TENANT_ID, and
+    # AZURE_CLIENT_SECRET keys. Leave empty for Workload/Managed Identity.
+    existingSecret: ""
+
+manager:
+  replicas: 2
+  refreshIntervals:
+    oidcIssuer: 5m
+    workloadIdentity: 5m
+  image:
+    repository: ghcr.io/onurmicoogullari/azure-workload-identity-operator
+    # A release chart sets this to the validated multi-platform image digest.
+    digest: ""
+    # Defaults to Chart.appVersion when empty.
+    tag: ""
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+  podLabels: {}
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
+    linkerd.io/inject: "disabled"
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: azure-workload-identity-operator
+          control-plane: controller-manager
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: azure-workload-identity-operator
+          control-plane: controller-manager
+
+serviceAccount:
+  create: true
+  # Required when create=false.
+  name: ""
+  annotations: {}
+  labels: {}
+
+crds:
+  enabled: true
+
+rbac:
+  # Optional convenience admin/editor/viewer roles for the operator CRDs.
+  helpers:
+    enabled: false
+
+metrics:
+  enabled: true
+  port: 8443
+  secure: true
+
+webhook:
+  certificates:
+    # Supported values: certManager, existingSecret.
+    provider: certManager
+    certManager:
+      secretName: webhook-server-cert
+    existingSecret:
+      name: ""
+      # PEM CA bundle used by the API server to verify the serving certificate.
+      caBundle: ""
+
+# Bundled Microsoft Azure Workload Identity mutating webhook. Disable only when
+# the cluster already owns a compatible installation.
+azureWorkloadIdentityWebhook:
+  enabled: true
+  # This chart owns the bundled dependency as a cluster singleton. The
+  # namespace and certificate mode are immutable security boundaries.
+  namespaceOverride: microsoft-azure-workload-identity-webhook-system
+  disableCertRotation: true
+  certManagerCertificateName: azure-wi-webhook-serving-cert
+  replicaCount: 2
+  image:
+    repository: mcr.microsoft.com/oss/v2/azure/workload-identity/webhook
+    release: v1.6.0
+    digest: sha256:adb770248261c98c75696c6899017dbde4b07aaea09fc2f86e80acc98aeb452b
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  nodeSelector:
+    kubernetes.io/os: linux
+  resources:
+    limits:
+      cpu: 100m
+      memory: 30Mi
+    requests:
+      cpu: 100m
+      memory: 20Mi
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: workload-identity-webhook
+          azure-workload-identity.io/system: "true"
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app: workload-identity-webhook
+          azure-workload-identity.io/system: "true"
+  podLabels: {}
+  podAnnotations:
+    sidecar.istio.io/inject: "false"
+    linkerd.io/inject: "disabled"
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+  podDisruptionBudget:
+    minAvailable: 1
+  config:
+    # The parent chart owns azure-wi-webhook-config so azure.tenantId remains
+    # the single public tenant value.
+    create: false
+  azureEnvironment: AzurePublicCloud
+  logLevel: info
+  metricsAddr: ":8095"
+  metricsBackend: prometheus
+  priorityClassName: system-cluster-critical
+  mutatingWebhookAnnotations: {}
+  mutatingWebhookNamespaceSelector: {}
+  service:
+    type: ClusterIP
+  customTokenEndpoint:
+    annotationSuffix: ""
+    audience: ""

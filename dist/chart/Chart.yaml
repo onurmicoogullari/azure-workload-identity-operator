@@ -1,0 +1,27 @@
+apiVersion: v2
+name: azure-workload-identity-operator
+description: Install the Azure Workload Identity Operator and its workload mutation webhook
+type: application
+version: 0.1.0
+appVersion: "v0.1.0"
+home: https://github.com/onurmicoogullari/azure-workload-identity-operator
+sources:
+  - https://github.com/onurmicoogullari/azure-workload-identity-operator
+
+keywords:
+  - kubernetes
+  - operator
+  - azure
+  - workload-identity
+  - openshift
+
+annotations:
+  kubebuilder.io/generated-by: kubebuilder
+  azure-workload-identity-operator.io/upstream-webhook-version: "v1.6.0"
+
+dependencies:
+  - name: workload-identity-webhook
+    alias: azureWorkloadIdentityWebhook
+    version: 1.6.0-azwi.2
+    repository: file://../vendor/workload-identity-webhook
+    condition: azureWorkloadIdentityWebhook.enabled

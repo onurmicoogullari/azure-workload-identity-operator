@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": [
+    "azure",
+    "manager",
+    "serviceAccount",
+    "webhook",
+    "azureWorkloadIdentityWebhook"
+  ],
+  "properties": {
+    "azure": {
+      "type": "object",
+      "required": [
+        "tenantId",
+        "subscriptionId",
+        "resourceGroupName",
+        "location",
+        "credentials"
+      ],
+      "properties": {
+        "tenantId": {
+          "type": "string"
+        },
+        "subscriptionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resourceGroupName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1
+        },
+        "credentials": {
+          "type": "object",
+          "required": [
+            "existingSecret"
+          ],
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "manager": {
+      "type": "object",
+      "required": [
+        "replicas",
+        "refreshIntervals",
+        "image"
+      ],
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "refreshIntervals": {
+          "type": "object",
+          "required": [
+            "oidcIssuer",
+            "workloadIdentity"
+          ],
+          "properties": {
+            "oidcIssuer": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(ms|s|m|h)$"
+            },
+            "workloadIdentity": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*(ms|s|m|h)$"
+            }
+          }
+        },
+        "image": {
+          "type": "object",
+          "required": [
+            "repository",
+            "pullPolicy"
+          ],
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^$|^sha256:[a-f0-9]{64}$"
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "required": [
+        "create",
+        "name"
+      ],
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "create": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "webhook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "certificates"
+      ],
+      "properties": {
+        "certificates": {
+          "type": "object",
+          "required": [
+            "provider",
+            "certManager",
+            "existingSecret"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "certManager",
+                "existingSecret"
+              ]
+            },
+            "certManager": {
+              "type": "object",
+              "required": [
+                "secretName"
+              ],
+              "properties": {
+                "secretName": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "existingSecret": {
+              "type": "object",
+              "required": [
+                "name",
+                "caBundle"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "caBundle": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "provider": {
+                    "const": "existingSecret"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "existingSecret": {
+                    "properties": {
+                      "name": {
+                        "minLength": 1
+                      },
+                      "caBundle": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "azureWorkloadIdentityWebhook": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "namespaceOverride",
+        "disableCertRotation",
+        "certManagerCertificateName",
+        "service"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "namespaceOverride": {
+          "type": "string",
+          "const": "microsoft-azure-workload-identity-webhook-system"
+        },
+        "disableCertRotation": {
+          "type": "boolean",
+          "const": true
+        },
+        "certManagerCertificateName": {
+          "type": "string",
+          "const": "azure-wi-webhook-serving-cert"
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "azureWorkloadIdentityWebhook": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "azure": {
+            "properties": {
+              "tenantId": {
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

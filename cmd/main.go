@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
@@ -60,6 +61,7 @@ const (
 	podNamespaceEnvVar            = "POD_NAMESPACE"
 	serviceAccountNameEnvVar      = "SERVICE_ACCOUNT_NAME"
 	serviceAccountTokenExpiration = int64(600)
+	webhookServerPort             = 9443
 )
 
 func init() {
@@ -79,6 +81,26 @@ type azureScopeFlagValues struct {
 	subscriptionID    string
 	resourceGroupName string
 	location          string
+}
+
+type healthCheckRegistrar interface {
+	AddHealthzCheck(name string, check healthz.Checker) error
+	AddReadyzCheck(name string, check healthz.Checker) error
+}
+
+func registerHealthChecks(registrar healthCheckRegistrar, webhookStarted healthz.Checker) error {
+	if err := registrar.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		return fmt.Errorf("add health check: %w", err)
+	}
+	if err := registrar.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		return fmt.Errorf("add ready check: %w", err)
+	}
+	if webhookStarted != nil {
+		if err := registrar.AddReadyzCheck("webhook", webhookStarted); err != nil {
+			return fmt.Errorf("add webhook ready check: %w", err)
+		}
+	}
+	return nil
 }
 
 func registerAzureScopeFlags(flags *flag.FlagSet, values *azureScopeFlagValues) {
@@ -174,10 +196,9 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	// Initial webhook TLS options
-	webhookTLSOpts := tlsOpts
 	webhookServerOptions := webhook.Options{
-		TLSOpts: webhookTLSOpts,
+		Port:    webhookServerPort,
+		TLSOpts: tlsOpts,
 	}
 
 	if len(webhookCertPath) > 0 {
@@ -270,7 +291,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Publisher: &azure.BlobOIDCDocumentPublisher{
-			Client:     mgr.GetClient(),
+			Reader:     mgr.GetAPIReader(),
 			Credential: azureCredential,
 			Scope:      azureScope,
 		},
@@ -308,7 +329,8 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentityrecovery")
 		os.Exit(1)
 	}
-	if os.Getenv(enableWebhooksEnvVar) != "false" {
+	webhooksEnabled := os.Getenv(enableWebhooksEnvVar) != "false"
+	if webhooksEnabled {
 		var err error
 		if serviceAccountTokenReader == nil {
 			err = webhookv1alpha1.SetupOIDCIssuerWebhookWithManager(mgr, webhookOpenShiftServiceAccountIssuer, nil)
@@ -334,12 +356,12 @@ func main() {
 	}
 	// +kubebuilder:scaffold:builder
 
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "Failed to set up health check")
-		os.Exit(1)
+	var webhookStarted healthz.Checker
+	if webhooksEnabled {
+		webhookStarted = mgr.GetWebhookServer().StartedChecker()
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "Failed to set up ready check")
+	if err := registerHealthChecks(mgr, webhookStarted); err != nil {
+		setupLog.Error(err, "Failed to set up health checks")
 		os.Exit(1)
 	}
 

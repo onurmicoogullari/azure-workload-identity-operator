@@ -65,7 +65,7 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
+# TODO(user): To use a different vendor for e2e tests, modify the setup under 'test/e2e/kind'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
 # kubectl kuberc is disabled by default for test isolation; enable with:
 # - KUBECTL_KUBERC=true
@@ -73,8 +73,8 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # - CERT_MANAGER_INSTALL_SKIP=true
 KIND_CLUSTER ?= azure-workload-identity-operator-test-e2e
 
-.PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
+.PHONY: setup-test-e2e-kind
+setup-test-e2e-kind: ## Set up a Kind cluster for e2e tests if it does not exist
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
@@ -87,13 +87,17 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
 	esac
 
-.PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
+.PHONY: test-e2e-kind
+test-e2e-kind: setup-test-e2e-kind manifests generate fmt vet ## Run the Kind e2e tests against an isolated cluster.
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/kind/ -v -ginkgo.v
+	$(MAKE) cleanup-test-e2e-kind
 
-.PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
+.PHONY: test-e2e-crc
+test-e2e-crc: ## Run the packaged OpenShift/CRC e2e test with an ephemeral operator identity.
+	./test/e2e/openshift/e2e-test.sh
+
+.PHONY: cleanup-test-e2e-kind
+cleanup-test-e2e-kind: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
@@ -259,3 +263,88 @@ endef
 define gomodver
 $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
 endef
+
+##@ Helm Deployment
+
+## Helm binary to use for deploying the chart
+HELM ?= helm
+## Namespace to deploy the Helm release
+HELM_NAMESPACE ?= azure-workload-identity-operator-system
+## Name of the Helm release
+HELM_RELEASE ?= azure-workload-identity-operator
+## Path to the Helm chart directory
+HELM_CHART_DIR ?= dist/chart
+## Additional arguments to pass to helm commands
+HELM_EXTRA_ARGS ?=
+## Required Azure values for Helm deployment
+HELM_AZURE_TENANT_ID ?=
+HELM_AZURE_SUBSCRIPTION_ID ?=
+HELM_AZURE_RESOURCE_GROUP_NAME ?=
+HELM_AZURE_LOCATION ?=
+## Optional existing Secret containing AZURE_CLIENT_ID, AZURE_TENANT_ID, and AZURE_CLIENT_SECRET
+HELM_AZURE_CREDENTIALS_SECRET ?=
+
+.PHONY: helm-dependency
+helm-dependency: ## Rebuild the vendored Helm dependency archive from Chart.lock.
+	@command -v $(HELM) >/dev/null 2>&1 || { echo "Helm is not installed."; exit 1; }
+	$(HELM) dependency build --skip-refresh $(HELM_CHART_DIR)
+
+.PHONY: helm-lint
+helm-lint: helm-dependency ## Lint and exercise the supported Helm value combinations.
+	HELM="$(HELM)" ./hack/verify-chart.sh
+
+.PHONY: test-chart-integration
+test-chart-integration: helm-dependency ## Run the Helm lifecycle and admission integration tests against the current cluster.
+	go test -tags=integration ./test/integration/chart -v -timeout=30m
+
+.PHONY: helm-template
+helm-template: helm-dependency ## Render the chart. Set HELM_AZURE_* values and optionally HELM_EXTRA_ARGS.
+	@: "$${HELM_AZURE_TENANT_ID:=$(HELM_AZURE_TENANT_ID)}"; test -n "$$HELM_AZURE_TENANT_ID"
+	@: "$${HELM_AZURE_SUBSCRIPTION_ID:=$(HELM_AZURE_SUBSCRIPTION_ID)}"; test -n "$$HELM_AZURE_SUBSCRIPTION_ID"
+	@: "$${HELM_AZURE_RESOURCE_GROUP_NAME:=$(HELM_AZURE_RESOURCE_GROUP_NAME)}"; test -n "$$HELM_AZURE_RESOURCE_GROUP_NAME"
+	@: "$${HELM_AZURE_LOCATION:=$(HELM_AZURE_LOCATION)}"; test -n "$$HELM_AZURE_LOCATION"
+	$(HELM) template $(HELM_RELEASE) $(HELM_CHART_DIR) \
+		--namespace $(HELM_NAMESPACE) \
+		--set-string azure.tenantId="$(HELM_AZURE_TENANT_ID)" \
+		--set-string azure.subscriptionId="$(HELM_AZURE_SUBSCRIPTION_ID)" \
+		--set-string azure.resourceGroupName="$(HELM_AZURE_RESOURCE_GROUP_NAME)" \
+		--set-string azure.location="$(HELM_AZURE_LOCATION)" \
+		$(HELM_EXTRA_ARGS)
+
+.PHONY: helm-deploy
+helm-deploy: helm-dependency ## Deploy the complete operator via Helm. Set IMG and all HELM_AZURE_* values.
+	@command -v $(HELM) >/dev/null 2>&1 || { echo "Helm is not installed."; exit 1; }
+	@: "$${HELM_AZURE_TENANT_ID:=$(HELM_AZURE_TENANT_ID)}"; test -n "$$HELM_AZURE_TENANT_ID"
+	@: "$${HELM_AZURE_SUBSCRIPTION_ID:=$(HELM_AZURE_SUBSCRIPTION_ID)}"; test -n "$$HELM_AZURE_SUBSCRIPTION_ID"
+	@: "$${HELM_AZURE_RESOURCE_GROUP_NAME:=$(HELM_AZURE_RESOURCE_GROUP_NAME)}"; test -n "$$HELM_AZURE_RESOURCE_GROUP_NAME"
+	@: "$${HELM_AZURE_LOCATION:=$(HELM_AZURE_LOCATION)}"; test -n "$$HELM_AZURE_LOCATION"
+	$(HELM) upgrade --install $(HELM_RELEASE) $(HELM_CHART_DIR) \
+		--namespace $(HELM_NAMESPACE) \
+		--create-namespace \
+		--set-string manager.image.repository="$${IMG%:*}" \
+		--set-string manager.image.tag="$${IMG##*:}" \
+		--set-string azure.tenantId="$(HELM_AZURE_TENANT_ID)" \
+		--set-string azure.subscriptionId="$(HELM_AZURE_SUBSCRIPTION_ID)" \
+		--set-string azure.resourceGroupName="$(HELM_AZURE_RESOURCE_GROUP_NAME)" \
+		--set-string azure.location="$(HELM_AZURE_LOCATION)" \
+		$(if $(HELM_AZURE_CREDENTIALS_SECRET),--set-string azure.credentials.existingSecret="$(HELM_AZURE_CREDENTIALS_SECRET)",) \
+		--atomic \
+		--wait \
+		--timeout 10m \
+		$(HELM_EXTRA_ARGS)
+
+.PHONY: helm-uninstall
+helm-uninstall: ## Uninstall the Helm release from the K8s cluster.
+	$(HELM) uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-status
+helm-status: ## Show Helm release status.
+	$(HELM) status $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-history
+helm-history: ## Show Helm release history.
+	$(HELM) history $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-rollback
+helm-rollback: ## Rollback to previous Helm release.
+	$(HELM) rollback $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)

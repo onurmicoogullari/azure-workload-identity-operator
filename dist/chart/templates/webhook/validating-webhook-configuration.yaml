@@ -1,0 +1,85 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: azure-workload-identity-operator-validating-webhook-configuration
+  labels:
+    {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
+  {{- if eq .Values.webhook.certificates.provider "certManager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/azure-workload-identity-operator-serving-cert
+  {{- end }}
+webhooks:
+  - name: voidcissuer-v1alpha1.workloadidentity.azure.micosolutions.se
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      {{- if eq .Values.webhook.certificates.provider "existingSecret" }}
+      caBundle: {{ required "webhook.certificates.existingSecret.caBundle is required for existingSecret" .Values.webhook.certificates.existingSecret.caBundle | b64enc }}
+      {{- end }}
+      service:
+        name: azure-workload-identity-operator-webhook-service
+        namespace: {{ .Release.Namespace }}
+        path: /validate-workloadidentity-azure-micosolutions-se-v1alpha1-oidcissuer
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups:
+          - workloadidentity.azure.micosolutions.se
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - oidcissuers
+    sideEffects: None
+  - name: vworkloadidentity-v1alpha1.workloadidentity.azure.micosolutions.se
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      {{- if eq .Values.webhook.certificates.provider "existingSecret" }}
+      caBundle: {{ .Values.webhook.certificates.existingSecret.caBundle | b64enc }}
+      {{- end }}
+      service:
+        name: azure-workload-identity-operator-webhook-service
+        namespace: {{ .Release.Namespace }}
+        path: /validate-workloadidentity-azure-micosolutions-se-v1alpha1-workloadidentity
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups:
+          - workloadidentity.azure.micosolutions.se
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - workloadidentities
+    sideEffects: None
+  - name: vworkloadidentityrecovery-v1alpha1.workloadidentity.azure.micosolutions.se
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      {{- if eq .Values.webhook.certificates.provider "existingSecret" }}
+      caBundle: {{ .Values.webhook.certificates.existingSecret.caBundle | b64enc }}
+      {{- end }}
+      service:
+        name: azure-workload-identity-operator-webhook-service
+        namespace: {{ .Release.Namespace }}
+        path: /validate-workloadidentity-azure-micosolutions-se-v1alpha1-workloadidentityrecovery
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups:
+          - workloadidentity.azure.micosolutions.se
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - workloadidentityrecoveries
+    sideEffects: None

@@ -1,0 +1,19 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
+    control-plane: controller-manager
+  name: azure-workload-identity-operator-metrics-service
+  namespace: {{ .Release.Namespace }}
+spec:
+  ports:
+  - name: {{ if .Values.metrics.secure }}https{{ else }}http{{ end }}
+    port: {{ .Values.metrics.port }}
+    protocol: TCP
+    targetPort: {{ .Values.metrics.port }}
+  selector:
+    app.kubernetes.io/name: {{ include "azure-workload-identity-operator.name" . }}
+    control-plane: controller-manager
+{{- end }}
