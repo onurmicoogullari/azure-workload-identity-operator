@@ -328,7 +328,7 @@ helm-deploy: helm-dependency ## Deploy the complete operator via Helm. Set IMG a
 		--set-string azure.resourceGroupName="$(HELM_AZURE_RESOURCE_GROUP_NAME)" \
 		--set-string azure.location="$(HELM_AZURE_LOCATION)" \
 		$(if $(HELM_AZURE_CREDENTIALS_SECRET),--set-string azure.credentials.existingSecret="$(HELM_AZURE_CREDENTIALS_SECRET)",) \
-		--atomic \
+		--rollback-on-failure \
 		--wait \
 		--timeout 10m \
 		$(HELM_EXTRA_ARGS)

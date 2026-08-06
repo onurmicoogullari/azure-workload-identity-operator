@@ -132,6 +132,8 @@ verify_rendered_contracts() {
     'kind: Issuer' \
     'namespace: microsoft-azure-workload-identity-webhook-system' \
     '--disable-cert-rotation=true' \
+    '- azure-workload-identity-operator' \
+    '- azure-workload-identity-webhook' \
     'cert-manager.io/inject-ca-from: "microsoft-azure-workload-identity-webhook-system/azure-wi-webhook-serving-cert"' \
     'failurePolicy: Fail' \
     'containerPort: 9443' \

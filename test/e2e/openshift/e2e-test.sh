@@ -1393,8 +1393,10 @@ cleanup() {
   else
     if [[ -n $primary_failure ]]; then
       final_result_message="OpenShift e2e test failed: $primary_failure"
+    elif [[ $initial_exit_code -ne 0 && $cleanup_failed == "true" ]]; then
+      final_result_message="OpenShift e2e validation failed in step $failed_step, and cleanup had errors"
     elif [[ $initial_exit_code -ne 0 ]]; then
-      final_result_message="OpenShift e2e test failed before cleanup completed"
+      final_result_message="OpenShift e2e validation failed in step $failed_step; cleanup completed"
     else
       final_result_message="OpenShift e2e validation passed, but cleanup failed"
     fi
@@ -1865,7 +1867,7 @@ install_cert_manager_dependency() {
     --wait \
     --timeout "$wait_timeout"; then
     log ERROR "Failed to install cert-manager"
-    oc get all -n "$cert_manager_namespace" >&2 || true
+    dump_namespaced_resources "$cert_manager_namespace"
     oc get events -n "$cert_manager_namespace" --sort-by=.lastTimestamp >&2 || true
     exit 1
   fi
@@ -2074,7 +2076,7 @@ install_operator_release() {
     --set-string "azure.resourceGroupName=$AZURE_RESOURCE_GROUP_NAME" \
     --set-string "azure.location=$AZURE_LOCATION" \
     --set-string "azure.credentials.existingSecret=$operator_credentials_secret" \
-    --atomic \
+    --rollback-on-failure \
     --wait \
     --timeout "$wait_timeout"; then
     dump_operator_diagnostics
@@ -2179,8 +2181,10 @@ verify_operator_release() {
 
 dump_operator_diagnostics() {
   helm status "$operator_release" -n "$operator_namespace" >&2 || true
-  oc get all,certificate,issuer -n "$operator_namespace" >&2 || true
-  oc get all,certificate,issuer -n "$webhook_namespace" >&2 || true
+  dump_namespaced_resources "$operator_namespace"
+  dump_namespaced_resources "$webhook_namespace"
+  oc get certificates.cert-manager.io,issuers.cert-manager.io -n "$operator_namespace" >&2 || true
+  oc get certificates.cert-manager.io,issuers.cert-manager.io -n "$webhook_namespace" >&2 || true
   oc describe pods -n "$operator_namespace" >&2 || true
   oc describe pods -n "$webhook_namespace" >&2 || true
   oc logs -n "$operator_namespace" deployment/azure-workload-identity-operator-controller-manager \
@@ -2190,6 +2194,14 @@ dump_operator_diagnostics() {
   oc get validatingwebhookconfigurations,mutatingwebhookconfigurations >&2 || true
   oc get events -n "$operator_namespace" --sort-by=.lastTimestamp >&2 || true
   oc get events -n "$webhook_namespace" --sort-by=.lastTimestamp >&2 || true
+}
+
+dump_namespaced_resources() {
+  local namespace=$1
+
+  oc get \
+    deployments.apps,replicasets.apps,statefulsets.apps,daemonsets.apps,pods,services,jobs.batch,cronjobs.batch,poddisruptionbudgets.policy \
+    -n "$namespace" >&2 || true
 }
 
 ensure_key_vault_exists() {

@@ -19,6 +19,9 @@ metadata:
     {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
     app.kubernetes.io/component: workload-identity-webhook
 spec:
+  subject:
+    organizations:
+      - azure-workload-identity-webhook
   dnsNames:
     - azure-wi-webhook-webhook-service.{{ .Values.azureWorkloadIdentityWebhook.namespaceOverride }}.svc
     - azure-wi-webhook-webhook-service.{{ .Values.azureWorkloadIdentityWebhook.namespaceOverride }}.svc.cluster.local

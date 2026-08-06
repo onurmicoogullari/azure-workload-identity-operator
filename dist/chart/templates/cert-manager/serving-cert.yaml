@@ -7,6 +7,9 @@ metadata:
   labels:
     {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
 spec:
+  subject:
+    organizations:
+      - azure-workload-identity-operator
   dnsNames:
     - azure-workload-identity-operator-webhook-service.{{ .Release.Namespace }}.svc
     - azure-workload-identity-operator-webhook-service.{{ .Release.Namespace }}.svc.cluster.local
