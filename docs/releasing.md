@@ -10,10 +10,15 @@ chart points at the validated multi-platform image digest, not merely its tag.
 
 ## 1. Build the candidate
 
-Run the `Release Candidate` workflow on the intended commit and supply the
-semantic version without a `v` prefix. It runs Go and Helm validation, builds
-one multi-platform image, pushes only a `candidate-<commit>` tag, and uploads a
-14-day `release-candidate` artifact containing:
+Run the `Release Candidate` workflow from the intended commit on `main` and
+supply the semantic version without a `v` prefix. The workflow rejects other
+branches before building or pushing anything. It runs Go, vulnerability, and
+Helm validation, builds one multi-platform image, and pushes only a
+`candidate-<commit>` tag. Before packaging, Trivy scans both platforms through
+the exact image-index digest and blocks fixable HIGH or CRITICAL findings. See
+[Vulnerability scanning](vulnerability-scanning.md) for the scanner pinning,
+unfixed-finding policy, and local source check. Only after those gates pass does
+the workflow upload a 14-day `release-candidate` artifact containing:
 
 - the proposed final Helm package;
 - the full candidate commit;
@@ -21,7 +26,7 @@ one multi-platform image, pushes only a `candidate-<commit>` tag, and uploads a
 - checksums for the metadata and chart archive.
 
 The candidate chart is already versioned for the release and embeds that exact
-digest. Record the workflow run ID printed in its summary.
+scanned digest. Record the workflow run ID printed in its summary.
 
 ## 2. Validate the exact candidate on CRC/Azure
 
