@@ -13,14 +13,24 @@ permissions: {}
 env:
   IMAGE: ghcr.io/onurmicoogullari/azure-workload-identity-operator
   HELM_VERSION: v4.2.3
+  TRIVY_VERSION: v0.72.0
 
 jobs:
-  candidate:
+  validate:
     permissions:
       contents: read
-      packages: write
     runs-on: ubuntu-latest
     steps:
+      - name: Require main branch
+        shell: bash
+        env:
+          CANDIDATE_REF: ${{ github.ref }}
+        run: |
+          if [[ $CANDIDATE_REF != refs/heads/main ]]; then
+            echo "Release candidates must be built from main" >&2
+            exit 1
+          fi
+
       - name: Validate version
         shell: bash
         env:
@@ -54,12 +64,28 @@ jobs:
       - name: Validate source and chart
         run: |
           make test
+          make vulncheck
           make helm-lint
           source_status=$(git status --porcelain --untracked-files=all)
           if [[ -n "$source_status" ]]; then
             printf '%s\n' "$source_status" >&2
             exit 1
           fi
+
+  build:
+    needs: validate
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    outputs:
+      image_digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - name: Clone the candidate commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -82,10 +108,124 @@ jobs:
           provenance: true
           sbom: true
 
+  scan:
+    needs: build
+    permissions:
+      contents: read
+      packages: read
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
+    steps:
+      - name: Validate image digest
+        shell: bash
+        run: '[[ $IMAGE_DIGEST =~ ^sha256:[a-f0-9]{64}$ ]]'
+
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Report linux/amd64 HIGH and CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/amd64
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ env.IMAGE_DIGEST }}
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          format: table
+          exit-code: '0'
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          cache: 'false'
+
+      - name: Gate linux/amd64 actionable vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/amd64
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ env.IMAGE_DIGEST }}
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          cache: 'false'
+          skip-setup-trivy: 'true'
+
+      - name: Report linux/arm64 HIGH and CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/arm64
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ env.IMAGE_DIGEST }}
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          format: table
+          exit-code: '0'
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          cache: 'false'
+          skip-setup-trivy: 'true'
+
+      - name: Gate linux/arm64 actionable vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/arm64
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ env.IMAGE_DIGEST }}
+          version: ${{ env.TRIVY_VERSION }}
+          scan-type: image
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          scanners: vuln
+          cache: 'false'
+          skip-setup-trivy: 'true'
+
+  package:
+    needs:
+      - build
+      - scan
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the candidate commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install pinned Helm
+        shell: bash
+        run: |
+          install_dir="$RUNNER_TEMP/helm-${HELM_VERSION}"
+          mkdir -p "$install_dir"
+          cd "$install_dir"
+          archive="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -fsSLO "https://get.helm.sh/${archive}"
+          curl -fsSLO "https://get.helm.sh/${archive}.sha256sum"
+          sha256sum --check "${archive}.sha256sum"
+          tar -xzf "$archive"
+          sudo install "$install_dir/linux-amd64/helm" /usr/local/bin/helm
+
       - name: Package digest-pinned candidate chart
         shell: bash
         env:
-          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.image_digest }}
           VERSION: ${{ inputs.version }}
         run: |
           [[ $IMAGE_DIGEST =~ ^sha256:[a-f0-9]{64}$ ]]

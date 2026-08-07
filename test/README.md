@@ -21,6 +21,7 @@ Current cross-package suites are:
 Run them through their repository entry points:
 
 ```bash
+make vulncheck              # Reachable Go vulnerability scan
 make test-chart-integration # Existing prepared Kubernetes cluster
 make test-e2e-kind          # Creates and removes its Kind cluster
 make test-e2e-crc           # Requires a fresh, running CRC cluster
