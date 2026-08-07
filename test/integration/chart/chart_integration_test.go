@@ -178,7 +178,16 @@ func TestHelmChartLifecycle(t *testing.T) {
 			"--namespace", operatorNamespace, "--replicas=2")
 		runner.run(t, "kubectl", "rollout", "status", "deployment/"+operatorDeployment,
 			"--namespace", operatorNamespace, "--timeout=5m")
-		runner.run(t, "kubectl", "apply", "-f", workloadIdentityPath)
+		applyArgs := []string{"apply", "-f", workloadIdentityPath}
+		eventually(t, 2*time.Minute, "post-recovery validating admission", func() (bool, string) {
+			output, commandErr := runner.result("kubectl", applyArgs...)
+			return commandErr == nil, fmt.Sprintf(
+				"%s failed: %v\n%s",
+				formatCommand("kubectl", applyArgs),
+				commandErr,
+				output,
+			)
+		})
 	})
 
 	stage(t, "single-release ownership and retained resources", func(t *testing.T) {
