@@ -4,6 +4,7 @@
   "required": [
     "azure",
     "manager",
+    "telemetry",
     "serviceAccount",
     "webhook",
     "azureWorkloadIdentityWebhook"
@@ -52,7 +53,10 @@
       "required": [
         "replicas",
         "refreshIntervals",
-        "image"
+        "image",
+        "extraEnv",
+        "extraVolumes",
+        "extraVolumeMounts"
       ],
       "properties": {
         "replicas": {
@@ -101,6 +105,77 @@
                 "IfNotPresent",
                 "Never"
               ]
+            }
+          }
+        },
+        "extraEnv": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "extraVolumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "extraVolumeMounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "mountPath"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "mountPath": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tracing"
+      ],
+      "properties": {
+        "tracing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
             }
           }
         }

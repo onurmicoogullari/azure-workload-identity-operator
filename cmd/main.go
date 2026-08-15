@@ -22,11 +22,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/go-logr/logr"
 	configv1 "github.com/openshift/api/config/v1"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
@@ -46,6 +50,7 @@ import (
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/controller"
 	kubernetesclient "github.com/onurmicoogullari/azure-workload-identity-operator/internal/kubernetes"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/openshift"
+	operatortelemetry "github.com/onurmicoogullari/azure-workload-identity-operator/internal/telemetry"
 	webhookv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/internal/webhook/v1alpha1"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 	// +kubebuilder:scaffold:imports
@@ -58,7 +63,10 @@ var (
 
 const (
 	enableWebhooksEnvVar          = "ENABLE_WEBHOOKS"
+	operatorVersionEnvVar         = "OPERATOR_VERSION"
+	podNameEnvVar                 = "POD_NAME"
 	podNamespaceEnvVar            = "POD_NAMESPACE"
+	podUIDEnvVar                  = "POD_UID"
 	serviceAccountNameEnvVar      = "SERVICE_ACCOUNT_NAME"
 	serviceAccountTokenExpiration = int64(600)
 	webhookServerPort             = 9443
@@ -135,6 +143,7 @@ func main() {
 	var enableHTTP2 bool
 	var oidcIssuerRefreshInterval time.Duration
 	var workloadIdentityRefreshInterval time.Duration
+	var telemetryTracingEnabled bool
 	var azureScopeFlags azureScopeFlagValues
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -154,6 +163,8 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.BoolVar(&telemetryTracingEnabled, "telemetry-tracing-enabled", false,
+		"Enable in-process OpenTelemetry tracing configured through standard OTEL environment variables.")
 	registerOIDCIssuerRefreshIntervalFlags(flag.CommandLine, &oidcIssuerRefreshInterval)
 	registerAzureScopeFlags(flag.CommandLine, &azureScopeFlags)
 	flag.DurationVar(
@@ -164,12 +175,31 @@ func main() {
 			"ServiceAccount drift; each resource receives up to 10% stable jitter.",
 	)
 	opts := zap.Options{
-		Development: true,
+		Development: false,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	telemetryContext := logr.NewContext(context.Background(), setupLog.WithName("telemetry"))
+	telemetryRuntime, telemetryErr := operatortelemetry.New(telemetryContext, operatortelemetry.Config{
+		Enabled:        telemetryTracingEnabled,
+		ServiceVersion: operatorVersion(),
+		PodName:        os.Getenv(podNameEnvVar),
+		PodUID:         os.Getenv(podUIDEnvVar),
+		PodNamespace:   os.Getenv(podNamespaceEnvVar),
+	})
+	if telemetryErr != nil {
+		setupLog.Error(telemetryErr, "OpenTelemetry tracing is disabled because configuration is invalid")
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := telemetryRuntime.Shutdown(shutdownCtx); err != nil {
+			setupLog.Error(err, "Could not flush OpenTelemetry spans during shutdown")
+		}
+	}()
 
 	azureScope, err := azure.NewScope(
 		azureScopeFlags.subscriptionID,
@@ -210,7 +240,7 @@ func main() {
 		webhookServerOptions.KeyName = webhookCertKey
 	}
 
-	webhookServer := webhook.NewServer(webhookServerOptions)
+	webhookServer := telemetryRuntime.WrapWebhookServer(webhook.NewServer(webhookServerOptions))
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
@@ -247,7 +277,9 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	restConfig := ctrl.GetConfigOrDie()
+	telemetryRuntime.WrapRESTConfig(restConfig)
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -270,7 +302,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	azureCredential, err := azidentity.NewDefaultAzureCredential(nil)
+	azureTracingProvider := telemetryRuntime.AzureTracingProvider()
+	azureCredential, err := azidentity.NewDefaultAzureCredential(&azidentity.DefaultAzureCredentialOptions{
+		ClientOptions: azcore.ClientOptions{TracingProvider: azureTracingProvider},
+	})
 	if err != nil {
 		setupLog.Error(err, "Failed to create Azure credential")
 		os.Exit(1)
@@ -291,20 +326,23 @@ func main() {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Publisher: &azure.BlobOIDCDocumentPublisher{
-			Reader:     mgr.GetAPIReader(),
-			Credential: azureCredential,
-			Scope:      azureScope,
+			Reader:          mgr.GetAPIReader(),
+			Credential:      azureCredential,
+			Scope:           azureScope,
+			TracingProvider: azureTracingProvider,
 		},
 		OpenShiftServiceAccountIssuer: openShiftServiceAccountIssuer,
 		ServiceAccountTokens:          serviceAccountTokens,
 		OIDCIssuerRefreshInterval:     oidcIssuerRefreshInterval,
+		Telemetry:                     telemetryRuntime,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "oidcissuer")
 		os.Exit(1)
 	}
 	workloadIdentityManager := &azure.WorkloadIdentityManager{
-		Credential: azureCredential,
-		Scope:      azureScope,
+		Credential:      azureCredential,
+		Scope:           azureScope,
+		TracingProvider: azureTracingProvider,
 	}
 	if err := (&controller.WorkloadIdentityReconciler{
 		Client:           mgr.GetClient(),
@@ -313,6 +351,7 @@ func main() {
 		Recorder:         mgr.GetEventRecorder("workloadidentity-controller"),
 		Manager:          workloadIdentityManager,
 		RecoveryDetector: workloadIdentityManager,
+		Telemetry:        telemetryRuntime,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentity")
 		os.Exit(1)
@@ -322,9 +361,11 @@ func main() {
 		APIReader: mgr.GetAPIReader(),
 		Scheme:    mgr.GetScheme(),
 		Manager: &azure.WorkloadIdentityRecoveryManager{
-			Credential: azureCredential,
-			Scope:      azureScope,
+			Credential:      azureCredential,
+			Scope:           azureScope,
+			TracingProvider: azureTracingProvider,
 		},
+		Telemetry: telemetryRuntime,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentityrecovery")
 		os.Exit(1)
@@ -370,6 +411,17 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+func operatorVersion() string {
+	if version := strings.TrimSpace(os.Getenv(operatorVersionEnvVar)); version != "" {
+		return strings.TrimPrefix(version, "v")
+	}
+	buildInfo, ok := debug.ReadBuildInfo()
+	if ok && buildInfo.Main.Version != "" && buildInfo.Main.Version != "(devel)" {
+		return strings.TrimPrefix(buildInfo.Main.Version, "v")
+	}
+	return "devel"
 }
 
 func openShiftServiceAccountIssuerClients(

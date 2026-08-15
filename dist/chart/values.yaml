@@ -23,6 +23,12 @@ manager:
     tag: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
+  # Generic pod-level escape hatches for standard OpenTelemetry environment
+  # variables, TLS Secrets/ConfigMaps, and other deployment-specific settings.
+  # Fixed operator environment and the webhook-certs volume cannot be replaced.
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
   resources:
     limits:
       cpu: 500m
@@ -83,6 +89,12 @@ metrics:
   enabled: true
   port: 8443
   secure: true
+
+telemetry:
+  tracing:
+    # Opt-in in-process tracing. The chart never installs or assumes an
+    # OpenTelemetry Operator, Collector, or backend.
+    enabled: false
 
 webhook:
   certificates:

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	aztracing "github.com/Azure/azure-sdk-for-go/sdk/azcore/tracing"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/msi/armmsi"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 	"k8s.io/apimachinery/pkg/types"
@@ -29,12 +30,13 @@ const (
 )
 
 type WorkloadIdentityManager struct {
-	Credential azcore.TokenCredential
-	Scope      Scope
+	Credential      azcore.TokenCredential
+	Scope           Scope
+	TracingProvider aztracing.Provider
 }
 
 func (m *WorkloadIdentityManager) clients() (*identityClients, error) {
-	return newIdentityClients(m.Scope, m.Credential)
+	return newIdentityClients(m.Scope, m.Credential, m.TracingProvider)
 }
 
 func (m *WorkloadIdentityManager) Ensure(
@@ -92,22 +94,23 @@ type identityClients struct {
 	federatedCredentials federatedIdentityCredentialsClient
 }
 
-func newIdentityClients(scope Scope, credential azcore.TokenCredential) (*identityClients, error) {
+func newIdentityClients(scope Scope, credential azcore.TokenCredential, tracingProvider aztracing.Provider) (*identityClients, error) {
 	if credential == nil {
 		return nil, fmt.Errorf("azure credential is required")
 	}
 	if err := scope.Validate(); err != nil {
 		return nil, fmt.Errorf("validate Azure scope: %w", err)
 	}
-	resourceGroups, err := armresources.NewResourceGroupsClient(scope.subscriptionID, credential, nil)
+	options := azureARMClientOptions(tracingProvider)
+	resourceGroups, err := armresources.NewResourceGroupsClient(scope.subscriptionID, credential, options)
 	if err != nil {
 		return nil, fmt.Errorf("create resource groups client: %w", err)
 	}
-	identities, err := armmsi.NewUserAssignedIdentitiesClient(scope.subscriptionID, credential, nil)
+	identities, err := armmsi.NewUserAssignedIdentitiesClient(scope.subscriptionID, credential, options)
 	if err != nil {
 		return nil, fmt.Errorf("create user assigned identities client: %w", err)
 	}
-	federatedCredentialsClient, err := armmsi.NewFederatedIdentityCredentialsClient(scope.subscriptionID, credential, nil)
+	federatedCredentialsClient, err := armmsi.NewFederatedIdentityCredentialsClient(scope.subscriptionID, credential, options)
 	if err != nil {
 		return nil, fmt.Errorf("create federated identity credentials client: %w", err)
 	}

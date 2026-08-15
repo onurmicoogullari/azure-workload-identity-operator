@@ -22,6 +22,8 @@ import (
 	"time"
 
 	configv1 "github.com/openshift/api/config/v1"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +40,7 @@ import (
 	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/oidc"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/oidcissuer"
+	operatortelemetry "github.com/onurmicoogullari/azure-workload-identity-operator/internal/telemetry"
 )
 
 const oidcIssuerFinalizer = "workloadidentity.azure.micosolutions.se/oidcissuer-finalizer"
@@ -71,6 +74,7 @@ type OIDCIssuerReconciler struct {
 	OpenShiftServiceAccountIssuer OpenShiftServiceAccountIssuerManager
 	ServiceAccountTokens          ServiceAccountTokenClient
 	OIDCIssuerRefreshInterval     time.Duration
+	Telemetry                     *operatortelemetry.Runtime
 }
 
 // +kubebuilder:rbac:groups=workloadidentity.azure.micosolutions.se,resources=oidcissuers,verbs=get;list;watch;create;update;patch;delete
@@ -85,14 +89,24 @@ func (r *OIDCIssuerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	log := logf.FromContext(ctx)
 
 	issuer := &azworkloadidentityv1alpha1.OIDCIssuer{}
-	if err := r.Get(ctx, req.NamespacedName, issuer); err != nil {
-		if errors.IsNotFound(err) {
+	stateCtx, stateSpan := otel.Tracer(operatortelemetry.InstrumentationName).Start(ctx, "kubernetes.state.observe")
+	getErr := r.Get(stateCtx, req.NamespacedName, issuer)
+	if getErr != nil && !errors.IsNotFound(getErr) {
+		stateSpan.RecordError(getErr)
+		stateSpan.SetStatus(codes.Error, "Kubernetes state observation failed")
+	}
+	stateSpan.End()
+	if getErr != nil {
+		if errors.IsNotFound(getErr) {
+			operatortelemetry.SetReconcileOutcome(ctx, "noop")
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, getErr
 	}
+	operatortelemetry.SetResourceAttributes(ctx, "OIDCIssuer", issuer)
 
 	if issuer.Name != azworkloadidentityv1alpha1.OIDCIssuerName {
+		operatortelemetry.SetReconcileOutcome(ctx, "blocked")
 		log.Info("Ignoring OIDCIssuer with unsupported name", "expectedName", azworkloadidentityv1alpha1.OIDCIssuerName)
 		return ctrl.Result{}, r.setNotReady(ctx, issuer, "InvalidName", fmt.Sprintf("OIDCIssuer must be named %q", azworkloadidentityv1alpha1.OIDCIssuerName))
 	}
@@ -109,6 +123,7 @@ func (r *OIDCIssuerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if r.Publisher == nil {
+		operatortelemetry.SetReconcileOutcome(ctx, "blocked")
 		return ctrl.Result{}, r.setNotReady(ctx, issuer, "PublisherNotConfigured", "OIDC document publisher is not configured")
 	}
 
@@ -156,6 +171,7 @@ func (r *OIDCIssuerReconciler) reconcileDelete(ctx context.Context, issuer *azwo
 		return ctrl.Result{}, err
 	}
 	if result.Blocked {
+		operatortelemetry.SetReconcileOutcome(ctx, "blocked")
 		logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because WorkloadIdentities still exist", "count", result.WorkloadIdentityCount)
 		return ctrl.Result{}, r.setNotReady(ctx, issuer, result.Reason, result.Message)
 	}
@@ -172,6 +188,7 @@ func (r *OIDCIssuerReconciler) reconcileDelete(ctx context.Context, issuer *azwo
 		return ctrl.Result{}, fmt.Errorf("verify cluster service account token issuer before OIDCIssuer deletion: %w", result.Err)
 	}
 	if result.Blocked {
+		operatortelemetry.SetReconcileOutcome(ctx, "blocked")
 		if result.Reason == oidcissuer.ReasonClusterServiceAccountIssuerGuardUnavailable {
 			logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because no cluster service account issuer guard is configured", "issuerURL", issuer.Status.IssuerURL)
 		} else {
@@ -188,6 +205,7 @@ func (r *OIDCIssuerReconciler) reconcileDelete(ctx context.Context, issuer *azwo
 		return ctrl.Result{}, err
 	}
 	if result.Blocked {
+		operatortelemetry.SetReconcileOutcome(ctx, "blocked")
 		logf.FromContext(ctx).Info("Blocked OIDCIssuer deletion because OpenShift still uses its issuer URL", "issuerURL", issuer.Status.IssuerURL)
 		return ctrl.Result{}, r.setNotReady(ctx, issuer, result.Reason, result.Message)
 	}
@@ -328,5 +346,7 @@ func (r *OIDCIssuerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.OpenShiftServiceAccountIssuer != nil {
 		controllerBuilder = controllerBuilder.Watches(&configv1.Authentication{}, handler.EnqueueRequestsFromMapFunc(r.oidcIssuerForAuthentication))
 	}
-	return controllerBuilder.Named("oidcissuer").Complete(r)
+	return controllerBuilder.Named("oidcissuer").Complete(
+		r.Telemetry.WrapReconciler("oidcissuer.reconcile", "OIDCIssuer", r),
+	)
 }

@@ -6,23 +6,28 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	aztracing "github.com/Azure/azure-sdk-for-go/sdk/azcore/tracing"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armresources"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/storage/armstorage"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blob"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/oidc"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/signingkey"
+	operatortelemetry "github.com/onurmicoogullari/azure-workload-identity-operator/internal/telemetry"
 )
 
 const oidcIssuerUIDTag = "oidc-issuer-uid"
 
 type BlobOIDCDocumentPublisher struct {
-	Reader     client.Reader
-	Credential azcore.TokenCredential
-	Scope      Scope
+	Reader          client.Reader
+	Credential      azcore.TokenCredential
+	Scope           Scope
+	TracingProvider aztracing.Provider
 }
 
 type oidcDocuments struct {
@@ -42,7 +47,7 @@ func (p *BlobOIDCDocumentPublisher) Publish(ctx context.Context, issuer *azworkl
 		return oidc.PublishedDocuments{}, fmt.Errorf("validate Azure scope: %w", err)
 	}
 
-	clients, err := newStorageClients(p.Scope, p.Credential)
+	clients, err := newStorageClients(p.Scope, p.Credential, p.TracingProvider)
 	if err != nil {
 		return oidc.PublishedDocuments{}, err
 	}
@@ -68,7 +73,16 @@ func (p *BlobOIDCDocumentPublisher) Publish(ctx context.Context, issuer *azworkl
 	return oidc.PublishedDocuments{IssuerURL: issuerURL, AzureResources: resources, SigningKeys: documents.SigningKeys}, nil
 }
 
-func buildOIDCDocuments(ctx context.Context, reader client.Reader, issuer *azworkloadidentityv1alpha1.OIDCIssuer, issuerURL string) (oidcDocuments, error) {
+func buildOIDCDocuments(ctx context.Context, reader client.Reader, issuer *azworkloadidentityv1alpha1.OIDCIssuer, issuerURL string) (documents oidcDocuments, err error) {
+	ctx, span := otel.Tracer(operatortelemetry.InstrumentationName).Start(ctx, "oidc.documents.generate")
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "OIDC document generation failed")
+		}
+		span.End()
+	}()
+
 	publicKeys, err := signingkey.PublicKeysPEM(ctx, reader, issuer.Spec.SigningKey)
 	if err != nil {
 		return oidcDocuments{}, err
@@ -133,7 +147,7 @@ func (p *BlobOIDCDocumentPublisher) Delete(ctx context.Context, issuer *azworklo
 		return fmt.Errorf("validate Azure scope: %w", err)
 	}
 
-	clients, err := newStorageClients(p.Scope, p.Credential)
+	clients, err := newStorageClients(p.Scope, p.Credential, p.TracingProvider)
 	if err != nil {
 		return err
 	}
@@ -162,18 +176,20 @@ type storageClients struct {
 	storageAccounts *armstorage.AccountsClient
 	blobContainers  *armstorage.BlobContainersClient
 	credential      azcore.TokenCredential
+	tracingProvider aztracing.Provider
 }
 
-func newStorageClients(scope Scope, credential azcore.TokenCredential) (*storageClients, error) {
-	resourceGroups, err := armresources.NewResourceGroupsClient(scope.subscriptionID, credential, nil)
+func newStorageClients(scope Scope, credential azcore.TokenCredential, tracingProvider aztracing.Provider) (*storageClients, error) {
+	options := azureARMClientOptions(tracingProvider)
+	resourceGroups, err := armresources.NewResourceGroupsClient(scope.subscriptionID, credential, options)
 	if err != nil {
 		return nil, fmt.Errorf("create resource groups client: %w", err)
 	}
-	storageAccounts, err := armstorage.NewAccountsClient(scope.subscriptionID, credential, nil)
+	storageAccounts, err := armstorage.NewAccountsClient(scope.subscriptionID, credential, options)
 	if err != nil {
 		return nil, fmt.Errorf("create storage accounts client: %w", err)
 	}
-	blobContainers, err := armstorage.NewBlobContainersClient(scope.subscriptionID, credential, nil)
+	blobContainers, err := armstorage.NewBlobContainersClient(scope.subscriptionID, credential, options)
 	if err != nil {
 		return nil, fmt.Errorf("create blob containers client: %w", err)
 	}
@@ -184,6 +200,7 @@ func newStorageClients(scope Scope, credential azcore.TokenCredential) (*storage
 		storageAccounts: storageAccounts,
 		blobContainers:  blobContainers,
 		credential:      credential,
+		tracingProvider: tracingProvider,
 	}, nil
 }
 
@@ -318,7 +335,9 @@ func (c *storageClients) ensureBlobContainer(ctx context.Context, issuer *azwork
 func (c *storageClients) uploadJSON(ctx context.Context, issuer *azworkloadidentityv1alpha1.OIDCIssuer, name string, content []byte) error {
 	az := issuer.Spec.Azure
 	serviceURL := fmt.Sprintf("https://%s.blob.core.windows.net/", az.StorageAccountName)
-	blobClient, err := azblob.NewClient(serviceURL, c.credential, nil)
+	options := &azblob.ClientOptions{}
+	options.TracingProvider = c.tracingProvider
+	blobClient, err := azblob.NewClient(serviceURL, c.credential, options)
 	if err != nil {
 		return fmt.Errorf("create blob client: %w", err)
 	}

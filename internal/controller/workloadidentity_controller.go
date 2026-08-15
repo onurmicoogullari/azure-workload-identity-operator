@@ -24,6 +24,8 @@ import (
 	"maps"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -40,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	azworkloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	operatortelemetry "github.com/onurmicoogullari/azure-workload-identity-operator/internal/telemetry"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 )
 
@@ -72,6 +75,7 @@ type WorkloadIdentityReconciler struct {
 	RecoveryDetector workloadidentity.RecoveryDetector
 	Recorder         events.EventRecorder
 	RefreshInterval  time.Duration
+	Telemetry        *operatortelemetry.Runtime
 }
 
 // +kubebuilder:rbac:groups=workloadidentity.azure.micosolutions.se,resources=workloadidentities,verbs=get;list;watch;create;update;patch;delete
@@ -85,12 +89,21 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	log := logf.FromContext(ctx)
 
 	identity := &azworkloadidentityv1alpha1.WorkloadIdentity{}
-	if err := r.Get(ctx, req.NamespacedName, identity); err != nil {
-		if apierrors.IsNotFound(err) {
+	stateCtx, stateSpan := otel.Tracer(operatortelemetry.InstrumentationName).Start(ctx, "kubernetes.state.observe")
+	getErr := r.Get(stateCtx, req.NamespacedName, identity)
+	if getErr != nil && !apierrors.IsNotFound(getErr) {
+		stateSpan.RecordError(getErr)
+		stateSpan.SetStatus(codes.Error, "Kubernetes state observation failed")
+	}
+	stateSpan.End()
+	if getErr != nil {
+		if apierrors.IsNotFound(getErr) {
+			operatortelemetry.SetReconcileOutcome(ctx, "noop")
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, getErr
 	}
+	operatortelemetry.SetResourceAttributes(ctx, "WorkloadIdentity", identity)
 
 	if !identity.DeletionTimestamp.IsZero() {
 		return r.reconcileWorkloadIdentityDelete(ctx, identity)
@@ -104,12 +117,14 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	if workloadIdentityRecoveryIsInProgress(identity) {
+		operatortelemetry.SetReconcileOutcome(ctx, "blocked")
 		return ctrl.Result{RequeueAfter: workloadIdentityRecoveryPollInterval}, nil
 	}
 
 	issuer := &azworkloadidentityv1alpha1.OIDCIssuer{}
 	if err := r.Get(ctx, types.NamespacedName{Name: azworkloadidentityv1alpha1.OIDCIssuerName}, issuer); err != nil {
 		if apierrors.IsNotFound(err) {
+			operatortelemetry.SetReconcileOutcome(ctx, "blocked")
 			return r.waitForOIDCIssuer(
 				ctx,
 				identity,
@@ -120,6 +135,7 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 	if !isOIDCIssuerReady(issuer) {
+		operatortelemetry.SetReconcileOutcome(ctx, "blocked")
 		return r.waitForOIDCIssuer(
 			ctx,
 			identity,
@@ -129,6 +145,7 @@ func (r *WorkloadIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	if r.Manager == nil {
+		operatortelemetry.SetReconcileOutcome(ctx, "blocked")
 		return ctrl.Result{}, r.setWorkloadIdentityNotReady(ctx, identity, "ManagerNotConfigured", "Azure workload identity manager is not configured")
 	}
 
@@ -733,5 +750,5 @@ func (r *WorkloadIdentityReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&azworkloadidentityv1alpha1.OIDCIssuer{}, handler.EnqueueRequestsFromMapFunc(r.workloadIdentitiesForOIDCIssuer), builder.WithPredicates(oidcIssuerDependencyPredicate())).
 		Watches(&corev1.ServiceAccount{}, handler.EnqueueRequestsFromMapFunc(r.workloadIdentitiesForServiceAccount), builder.WithPredicates(serviceAccountDependencyPredicate())).
 		Named("workloadidentity").
-		Complete(r)
+		Complete(r.Telemetry.WrapReconciler("workloadidentity.reconcile", "WorkloadIdentity", r))
 }

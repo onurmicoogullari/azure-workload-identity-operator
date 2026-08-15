@@ -49,6 +49,14 @@ absent afterward.
 Any source change or new candidate workflow run creates a different candidate
 and requires a fresh CRC/Azure pass.
 
+CRC currently provides regression coverage but does not prove compatibility
+with the required OpenShift 4.22.8 target. Before promotion, run the focused
+acceptance procedure in [Telemetry](telemetry.md) against a disposable 4.22.8
+environment or an explicitly approved pre-production project on the target
+cluster. Record the candidate commit, OpenShift patch version, SCC selected for
+the manager Pods, and the disabled/enabled/failure-mode results with the release
+evidence.
+
 ## 3. Promote the validated candidate
 
 Run the `Promote Release` workflow with the candidate workflow run ID from the

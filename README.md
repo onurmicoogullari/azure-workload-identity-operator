@@ -2,10 +2,12 @@
 
 ## Support status
 
-The operator is currently **OpenShift-first**. The Helm chart and controller
-remain portable Kubernetes APIs, and chart lifecycle plus admission are tested
-on Kind, but the complete Azure issuer and token-exchange path is production
-verified only on OpenShift through CRC. Full vanilla Kubernetes/Azure e2e
+The operator is currently **OpenShift-first**, and OpenShift 4.22.8 is a
+required production compatibility target. This does not establish a minimum
+supported OpenShift version or exclude older releases. The Helm chart and
+controller remain portable Kubernetes APIs, and chart lifecycle plus admission
+are tested on Kind, but the complete Azure issuer and token-exchange path is
+production verified only on OpenShift through CRC. Full vanilla Kubernetes/Azure e2e
 coverage is planned in a follow-up branch; until that exists, non-OpenShift use
 is compatibility preview rather than a production support claim.
 
@@ -61,5 +63,6 @@ and troubleshooting.
 ## Operations
 
 - [Azure and Kubernetes permissions](docs/permissions.md)
+- [Telemetry and OpenTelemetry tracing](docs/telemetry.md)
 - [Controlled workload identity recovery](docs/recovery.md)
 - [Release process](docs/releasing.md)

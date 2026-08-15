@@ -19,11 +19,31 @@ coexist with public ACME `ClusterIssuer` resources.
 
 ## Platform support
 
-OpenShift is the current production-verified platform. Chart lifecycle and
+OpenShift 4.22.8 is a required production compatibility target and
+release-candidate smoke-test environment. This does not establish a minimum
+supported OpenShift version or exclude older releases. Chart lifecycle and
 admission are also exercised on Kind, but the full Azure issuer and token
 exchange flow does not yet have vanilla Kubernetes e2e coverage. Until that
 planned follow-up lands, other Kubernetes distributions are compatibility
 preview rather than a production support claim.
+
+## OpenTelemetry tracing
+
+In-process OpenTelemetry tracing is opt-in through
+`telemetry.tracing.enabled=true`. The chart does not install or assume an
+OpenTelemetry Operator, Collector, sidecar, DaemonSet, or backend. Configure
+OTLP/HTTP or OTLP/gRPC with standard `OTEL_*` environment variables through
+`manager.extraEnv`; use `manager.extraVolumes` and
+`manager.extraVolumeMounts` for private CAs. Fixed operator environment and the
+webhook certificate volume cannot be replaced through these hooks.
+
+The secured Prometheus endpoint remains unchanged. Logs are JSON on stdout and
+carry trace and span IDs when a trace context is active; logs are not exported
+through the OpenTelemetry Logs SDK. This preserves Kubernetes-native log
+collection without adding a duplicate in-process export pipeline. See the
+[telemetry operations guide](../../docs/telemetry.md)
+for configuration, sampling, attributes, security boundaries, failure
+behavior, and the OpenShift 4.22.8 acceptance procedure.
 
 ## Service Principal bootstrap
 

@@ -31,12 +31,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	operatortelemetry "github.com/onurmicoogullari/azure-workload-identity-operator/internal/telemetry"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 )
-
-// nolint:unused
-// log is for logging in this package.
-var workloadidentitylog = logf.Log.WithName("workloadidentity-resource")
 
 // SetupWorkloadIdentityWebhookWithManager registers the webhook for WorkloadIdentity in the manager.
 func SetupWorkloadIdentityWebhookWithManager(mgr ctrl.Manager) error {
@@ -59,14 +56,16 @@ type WorkloadIdentityValidator struct {
 }
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type WorkloadIdentity.
-func (v *WorkloadIdentityValidator) ValidateCreate(ctx context.Context, obj *workloadidentityv1alpha1.WorkloadIdentity) (admission.Warnings, error) {
-	workloadidentitylog.Info("Validation for WorkloadIdentity upon creation", "name", obj.GetName(), "namespace", obj.GetNamespace())
+func (v *WorkloadIdentityValidator) ValidateCreate(ctx context.Context, obj *workloadidentityv1alpha1.WorkloadIdentity) (_ admission.Warnings, err error) {
+	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "WorkloadIdentity", obj, err) }()
+	logf.FromContext(ctx).WithName("workloadidentity-resource").Info("Validation for WorkloadIdentity upon creation", "name", obj.GetName(), "namespace", obj.GetNamespace())
 	return nil, v.validate(ctx, obj)
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type WorkloadIdentity.
-func (v *WorkloadIdentityValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *workloadidentityv1alpha1.WorkloadIdentity) (admission.Warnings, error) {
-	workloadidentitylog.Info("Validation for WorkloadIdentity upon update", "name", newObj.GetName(), "namespace", newObj.GetNamespace())
+func (v *WorkloadIdentityValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *workloadidentityv1alpha1.WorkloadIdentity) (_ admission.Warnings, err error) {
+	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "WorkloadIdentity", newObj, err) }()
+	logf.FromContext(ctx).WithName("workloadidentity-resource").Info("Validation for WorkloadIdentity upon update", "name", newObj.GetName(), "namespace", newObj.GetNamespace())
 	allErrs, err := v.validationErrors(ctx, newObj)
 	if err != nil {
 		return nil, err
@@ -96,7 +95,8 @@ func (v *WorkloadIdentityValidator) ValidateUpdate(ctx context.Context, oldObj, 
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type WorkloadIdentity.
-func (v *WorkloadIdentityValidator) ValidateDelete(context.Context, *workloadidentityv1alpha1.WorkloadIdentity) (admission.Warnings, error) {
+func (v *WorkloadIdentityValidator) ValidateDelete(ctx context.Context, obj *workloadidentityv1alpha1.WorkloadIdentity) (_ admission.Warnings, err error) {
+	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "WorkloadIdentity", obj, err) }()
 	return nil, nil
 }
 
