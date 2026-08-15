@@ -31,13 +31,10 @@ import (
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/oidcissuer"
+	operatortelemetry "github.com/onurmicoogullari/azure-workload-identity-operator/internal/telemetry"
 )
 
 const blockingWorkloadIdentityReferenceLimit = 5
-
-// nolint:unused
-// log is for logging in this package.
-var oidcIssuerLog = logf.Log.WithName("oidcissuer-resource")
 
 // SetupOIDCIssuerWebhookWithManager registers the webhook for OIDCIssuer in the manager.
 func SetupOIDCIssuerWebhookWithManager(mgr ctrl.Manager, openShiftServiceAccountIssuer oidcissuer.OpenShiftServiceAccountIssuerReader, serviceAccountTokens oidcissuer.ServiceAccountTokenIssuerReader) error {
@@ -64,8 +61,9 @@ type OIDCIssuerValidator struct {
 }
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type OIDCIssuer.
-func (v *OIDCIssuerValidator) ValidateCreate(_ context.Context, obj *workloadidentityv1alpha1.OIDCIssuer) (admission.Warnings, error) {
-	oidcIssuerLog.Info("Validation for OIDCIssuer upon creation", "name", obj.GetName())
+func (v *OIDCIssuerValidator) ValidateCreate(ctx context.Context, obj *workloadidentityv1alpha1.OIDCIssuer) (_ admission.Warnings, err error) {
+	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "OIDCIssuer", obj, err) }()
+	logf.FromContext(ctx).WithName("oidcissuer-resource").Info("Validation for OIDCIssuer upon creation", "name", obj.GetName())
 	allErrs := validateOIDCIssuerName(obj)
 	allErrs = append(allErrs, validateOIDCIssuerSigningKey(obj.Spec.SigningKey)...)
 	if len(allErrs) > 0 {
@@ -75,8 +73,9 @@ func (v *OIDCIssuerValidator) ValidateCreate(_ context.Context, obj *workloadide
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type OIDCIssuer.
-func (v *OIDCIssuerValidator) ValidateUpdate(_ context.Context, oldObj, newObj *workloadidentityv1alpha1.OIDCIssuer) (admission.Warnings, error) {
-	oidcIssuerLog.Info("Validation for OIDCIssuer upon update", "name", newObj.GetName())
+func (v *OIDCIssuerValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *workloadidentityv1alpha1.OIDCIssuer) (_ admission.Warnings, err error) {
+	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "OIDCIssuer", newObj, err) }()
+	logf.FromContext(ctx).WithName("oidcissuer-resource").Info("Validation for OIDCIssuer upon update", "name", newObj.GetName())
 	allErrs := validateOIDCIssuerName(newObj)
 	allErrs = append(allErrs, validateOIDCIssuerSigningKey(newObj.Spec.SigningKey)...)
 	if !reflect.DeepEqual(oldObj.Spec.Azure, newObj.Spec.Azure) {
@@ -89,8 +88,10 @@ func (v *OIDCIssuerValidator) ValidateUpdate(_ context.Context, oldObj, newObj *
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type OIDCIssuer.
-func (v *OIDCIssuerValidator) ValidateDelete(ctx context.Context, obj *workloadidentityv1alpha1.OIDCIssuer) (admission.Warnings, error) {
-	oidcIssuerLog.Info("Validation for OIDCIssuer upon deletion", "name", obj.GetName())
+func (v *OIDCIssuerValidator) ValidateDelete(ctx context.Context, obj *workloadidentityv1alpha1.OIDCIssuer) (_ admission.Warnings, err error) {
+	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "OIDCIssuer", obj, err) }()
+	logger := logf.FromContext(ctx).WithName("oidcissuer-resource")
+	logger.Info("Validation for OIDCIssuer upon deletion", "name", obj.GetName())
 	if obj.GetName() != workloadidentityv1alpha1.OIDCIssuerName {
 		return nil, nil
 	}
@@ -103,7 +104,7 @@ func (v *OIDCIssuerValidator) ValidateDelete(ctx context.Context, obj *workloadi
 		return nil, err
 	}
 	if result.Blocked {
-		oidcIssuerLog.Info("Rejected OIDCIssuer deletion because WorkloadIdentities still exist", "count", result.WorkloadIdentityCount)
+		logger.Info("Rejected OIDCIssuer deletion because WorkloadIdentities still exist", "count", result.WorkloadIdentityCount)
 		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), result.Message)
 	}
 
@@ -116,7 +117,7 @@ func (v *OIDCIssuerValidator) ValidateDelete(ctx context.Context, obj *workloadi
 	}
 	if result.Blocked {
 		if result.Reason == oidcissuer.ReasonBlockedByClusterServiceAccountIssuer {
-			oidcIssuerLog.Info("Rejected OIDCIssuer deletion because the cluster still mints service account tokens with its issuer URL", "issuerURL", obj.Status.IssuerURL)
+			logger.Info("Rejected OIDCIssuer deletion because the cluster still mints service account tokens with its issuer URL", "issuerURL", obj.Status.IssuerURL)
 		}
 		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), result.Message)
 	}
@@ -126,7 +127,7 @@ func (v *OIDCIssuerValidator) ValidateDelete(ctx context.Context, obj *workloadi
 		return nil, err
 	}
 	if result.Blocked {
-		oidcIssuerLog.Info("Rejected OIDCIssuer deletion because OpenShift still uses its issuer URL", "issuerURL", obj.Status.IssuerURL)
+		logger.Info("Rejected OIDCIssuer deletion because OpenShift still uses its issuer URL", "issuerURL", obj.Status.IssuerURL)
 		return nil, forbiddenOIDCIssuerDeletion(obj.GetName(), result.Message)
 	}
 	return nil, nil

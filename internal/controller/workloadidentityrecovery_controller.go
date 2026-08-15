@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	operatortelemetry "github.com/onurmicoogullari/azure-workload-identity-operator/internal/telemetry"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 )
 
@@ -61,6 +64,7 @@ type WorkloadIdentityRecoveryReconciler struct {
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	Manager   workloadidentity.RecoveryManager
+	Telemetry *operatortelemetry.Runtime
 }
 
 // +kubebuilder:rbac:groups=workloadidentity.azure.micosolutions.se,resources=workloadidentityrecoveries,verbs=get;list;watch;update;patch
@@ -76,12 +80,21 @@ func (r *WorkloadIdentityRecoveryReconciler) Reconcile(
 	req ctrl.Request,
 ) (ctrl.Result, error) {
 	recovery := &workloadidentityv1alpha1.WorkloadIdentityRecovery{}
-	if err := r.Get(ctx, req.NamespacedName, recovery); err != nil {
-		if apierrors.IsNotFound(err) {
+	stateCtx, stateSpan := otel.Tracer(operatortelemetry.InstrumentationName).Start(ctx, "kubernetes.state.observe")
+	getErr := r.Get(stateCtx, req.NamespacedName, recovery)
+	if getErr != nil && !apierrors.IsNotFound(getErr) {
+		stateSpan.RecordError(getErr)
+		stateSpan.SetStatus(codes.Error, "Kubernetes state observation failed")
+	}
+	stateSpan.End()
+	if getErr != nil {
+		if apierrors.IsNotFound(getErr) {
+			operatortelemetry.SetReconcileOutcome(ctx, "noop")
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, getErr
 	}
+	operatortelemetry.SetResourceAttributes(ctx, "WorkloadIdentityRecovery", recovery)
 
 	if !recovery.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, recovery)
@@ -94,9 +107,11 @@ func (r *WorkloadIdentityRecoveryReconciler) Reconcile(
 		return ctrl.Result{Requeue: true}, nil
 	}
 	if recoveryIsComplete(recovery) {
+		operatortelemetry.SetReconcileOutcome(ctx, "noop")
 		return ctrl.Result{}, r.releaseCompletedTarget(ctx, recovery)
 	}
 	if recoveryIsFailed(recovery) {
+		operatortelemetry.SetReconcileOutcome(ctx, "noop")
 		return ctrl.Result{}, nil
 	}
 	if r.Manager == nil {
@@ -474,5 +489,5 @@ func (r *WorkloadIdentityRecoveryReconciler) SetupWithManager(mgr ctrl.Manager) 
 		).
 		WithOptions(controllerpkg.Options{MaxConcurrentReconciles: 1}).
 		Named("workloadidentityrecovery").
-		Complete(r)
+		Complete(r.Telemetry.WrapReconciler("workloadidentityrecovery.reconcile", "WorkloadIdentityRecovery", r))
 }

@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	operatortelemetry "github.com/onurmicoogullari/azure-workload-identity-operator/internal/telemetry"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 )
 
@@ -68,6 +69,7 @@ func (r *WorkloadIdentityRecoveryReconciler) block(
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
+	operatortelemetry.SetReconcileOutcome(ctx, "blocked")
 	return ctrl.Result{RequeueAfter: recoveryRetryInterval}, nil
 }
 

@@ -1,3 +1,4 @@
+{{- include "azure-workload-identity-operator.validateManagerExtensions" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -80,11 +81,22 @@ spec:
             - --azure-subscription-id={{ required "azure.subscriptionId is required" .Values.azure.subscriptionId }}
             - --azure-resource-group-name={{ required "azure.resourceGroupName is required" .Values.azure.resourceGroupName }}
             - --azure-location={{ required "azure.location is required" .Values.azure.location }}
+            {{- if .Values.telemetry.tracing.enabled }}
+            - --telemetry-tracing-enabled
+            {{- end }}
           image: {{ if .Values.manager.image.digest }}{{ printf "%s@%s" .Values.manager.image.repository .Values.manager.image.digest | quote }}{{ else if contains "@" .Values.manager.image.repository }}{{ .Values.manager.image.repository | quote }}{{ else }}{{ printf "%s:%s" .Values.manager.image.repository (.Values.manager.image.tag | default .Chart.AppVersion) | quote }}{{ end }}
           imagePullPolicy: {{ .Values.manager.image.pullPolicy }}
           env:
             - name: AZURE_TOKEN_CREDENTIALS
               value: prod
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -93,6 +105,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.serviceAccountName
+            - name: OPERATOR_VERSION
+              value: {{ .Chart.AppVersion | default "devel" | trimPrefix "v" | quote }}
             {{- with .Values.azure.credentials.existingSecret }}
             - name: AZURE_CLIENT_ID
               valueFrom:
@@ -109,6 +123,9 @@ spec:
                 secretKeyRef:
                   name: {{ . | quote }}
                   key: AZURE_CLIENT_SECRET
+            {{- end }}
+            {{- with .Values.manager.extraEnv }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           ports:
             - name: health
@@ -137,7 +154,13 @@ spec:
             - name: webhook-certs
               mountPath: /tmp/k8s-webhook-server/serving-certs
               readOnly: true
+            {{- with .Values.manager.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: webhook-certs
           secret:
             secretName: {{ include "azure-workload-identity-operator.webhookSecretName" . }}
+        {{- with .Values.manager.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

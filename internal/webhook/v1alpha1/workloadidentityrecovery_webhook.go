@@ -34,10 +34,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
+	operatortelemetry "github.com/onurmicoogullari/azure-workload-identity-operator/internal/telemetry"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/workloadidentity"
 )
-
-var workloadidentityrecoverylog = logf.Log.WithName("workloadidentityrecovery-resource")
 
 // SetupWorkloadIdentityRecoveryWebhookWithManager registers the webhook for WorkloadIdentityRecovery in the manager.
 func SetupWorkloadIdentityRecoveryWebhookWithManager(mgr ctrl.Manager) error {
@@ -60,8 +59,10 @@ type WorkloadIdentityRecoveryValidator struct {
 func (v *WorkloadIdentityRecoveryValidator) ValidateCreate(
 	ctx context.Context,
 	obj *workloadidentityv1alpha1.WorkloadIdentityRecovery,
-) (admission.Warnings, error) {
-	workloadidentityrecoverylog.Info(
+) (_ admission.Warnings, err error) {
+	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "WorkloadIdentityRecovery", obj, err) }()
+	logger := logf.FromContext(ctx).WithName("workloadidentityrecovery-resource")
+	logger.Info(
 		"Validating WorkloadIdentityRecovery creation",
 		"name",
 		obj.Name,
@@ -106,7 +107,7 @@ func (v *WorkloadIdentityRecoveryValidator) ValidateCreate(
 			workloadidentity.RecoveryPreviousWorkloadIdentityUIDIndex: string(obj.Spec.PreviousWorkloadIdentityUID),
 		},
 	); err != nil {
-		workloadidentityrecoverylog.Error(
+		logger.Error(
 			err,
 			"Could not check for duplicate WorkloadIdentityRecovery",
 			"previousWorkloadIdentityUid",
@@ -130,10 +131,11 @@ func (v *WorkloadIdentityRecoveryValidator) ValidateCreate(
 }
 
 func (v *WorkloadIdentityRecoveryValidator) ValidateUpdate(
-	_ context.Context,
+	ctx context.Context,
 	oldObj, newObj *workloadidentityv1alpha1.WorkloadIdentityRecovery,
-) (admission.Warnings, error) {
-	workloadidentityrecoverylog.Info(
+) (_ admission.Warnings, err error) {
+	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "WorkloadIdentityRecovery", newObj, err) }()
+	logf.FromContext(ctx).WithName("workloadidentityrecovery-resource").Info(
 		"Validating WorkloadIdentityRecovery update",
 		"name",
 		newObj.Name,
@@ -147,10 +149,11 @@ func (v *WorkloadIdentityRecoveryValidator) ValidateUpdate(
 }
 
 func (v *WorkloadIdentityRecoveryValidator) ValidateDelete(
-	_ context.Context,
+	ctx context.Context,
 	obj *workloadidentityv1alpha1.WorkloadIdentityRecovery,
-) (admission.Warnings, error) {
-	workloadidentityrecoverylog.Info(
+) (_ admission.Warnings, err error) {
+	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "WorkloadIdentityRecovery", obj, err) }()
+	logf.FromContext(ctx).WithName("workloadidentityrecovery-resource").Info(
 		"Validating WorkloadIdentityRecovery deletion",
 		"name",
 		obj.Name,

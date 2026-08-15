@@ -36,3 +36,25 @@ azure-workload-identity-operator-controller-manager
 {{- .Values.webhook.certificates.certManager.secretName -}}
 {{- end -}}
 {{- end }}
+
+{{- define "azure-workload-identity-operator.validateManagerExtensions" -}}
+{{- $fixedEnv := list "AZURE_TOKEN_CREDENTIALS" "POD_NAME" "POD_UID" "POD_NAMESPACE" "SERVICE_ACCOUNT_NAME" "OPERATOR_VERSION" "AZURE_CLIENT_ID" "AZURE_TENANT_ID" "AZURE_CLIENT_SECRET" -}}
+{{- range .Values.manager.extraEnv -}}
+{{- if has .name $fixedEnv -}}
+{{- fail (printf "manager.extraEnv cannot replace fixed environment variable %q" .name) -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.manager.extraVolumes -}}
+{{- if eq .name "webhook-certs" -}}
+{{- fail "manager.extraVolumes cannot replace fixed volume \"webhook-certs\"" -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.manager.extraVolumeMounts -}}
+{{- if eq .name "webhook-certs" -}}
+{{- fail "manager.extraVolumeMounts cannot replace fixed volume mount \"webhook-certs\"" -}}
+{{- end -}}
+{{- if eq .mountPath "/tmp/k8s-webhook-server/serving-certs" -}}
+{{- fail "manager.extraVolumeMounts cannot replace the fixed webhook certificate mount path" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

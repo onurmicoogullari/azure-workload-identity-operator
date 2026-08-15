@@ -9,6 +9,7 @@ tmpdir=$(mktemp -d)
 rendered=$tmpdir/rendered.yaml
 existing_secret_rendered=$tmpdir/existing-secret.yaml
 digest_rendered=$tmpdir/digest.yaml
+telemetry_rendered=$tmpdir/telemetry.yaml
 manager_role_rendered=$tmpdir/manager-role.yaml
 bundled_webhook_service_rendered=$tmpdir/bundled-webhook-service.yaml
 chart_rbac_rules=$tmpdir/chart-rbac-rules.yaml
@@ -66,6 +67,17 @@ render_and_verify_source_sync() {
       echo "release image digest was not rendered as the exact operator image reference" >&2
       exit 1
     }
+
+  "$helm_binary" template "$release_name" "$chart_dir" \
+    --namespace "$namespace" \
+    --set telemetry.tracing.enabled=true \
+    --set-string 'manager.extraEnv[0].name=OTEL_EXPORTER_OTLP_ENDPOINT' \
+    --set-string 'manager.extraEnv[0].value=https://collector.example:4318' \
+    --set-string 'manager.extraVolumes[0].name=operator-otlp-ca' \
+    --set-string 'manager.extraVolumes[0].secret.secretName=operator-otlp-ca' \
+    --set-string 'manager.extraVolumeMounts[0].name=operator-otlp-ca' \
+    --set-string 'manager.extraVolumeMounts[0].mountPath=/var/run/operator-otlp-ca' \
+    "${required_values[@]}" >"$telemetry_rendered"
 }
 
 assert_template_rejected() {
@@ -122,6 +134,21 @@ verify_rejected_values() {
     --set-string azure.location=location \
     --set azureWorkloadIdentityWebhook.enabled=false \
     --set-string webhook.certificates.provider=existingSecret
+
+  assert_template_rejected "chart unexpectedly allowed replacement of a fixed manager environment variable" \
+    "${required_values[@]}" \
+    --set-string 'manager.extraEnv[0].name=POD_UID' \
+    --set-string 'manager.extraEnv[0].value=forged'
+
+  assert_template_rejected "chart unexpectedly allowed replacement of the webhook certificate volume" \
+    "${required_values[@]}" \
+    --set-string 'manager.extraVolumes[0].name=webhook-certs' \
+    --set-string 'manager.extraVolumes[0].emptyDir={}'
+
+  assert_template_rejected "chart unexpectedly allowed replacement of the webhook certificate mount" \
+    "${required_values[@]}" \
+    --set-string 'manager.extraVolumeMounts[0].name=webhook-certs' \
+    --set-string 'manager.extraVolumeMounts[0].mountPath=/tmp/replacement'
 }
 
 verify_rendered_contracts() {
@@ -172,6 +199,18 @@ verify_rendered_contracts() {
   fi
 
   grep -Fq 'namespace: custom-operator-system' "$existing_secret_rendered"
+
+  for expected in \
+    '--telemetry-tracing-enabled' \
+    'name: OTEL_EXPORTER_OTLP_ENDPOINT' \
+    'value: https://collector.example:4318' \
+    'name: operator-otlp-ca' \
+    'mountPath: /var/run/operator-otlp-ca'; do
+    grep -Fq -- "$expected" "$telemetry_rendered" || {
+      echo "telemetry-enabled chart is missing: $expected" >&2
+      exit 1
+    }
+  done
   if grep -Eq '^kind: (Issuer|Certificate)$' "$existing_secret_rendered"; then
     echo "existingSecret mode unexpectedly rendered cert-manager resources" >&2
     exit 1

@@ -7,6 +7,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
+	aztracing "github.com/Azure/azure-sdk-for-go/sdk/azcore/tracing"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/msi/armmsi"
 
 	workloadidentityv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/api/v1alpha1"
@@ -21,16 +22,17 @@ const (
 )
 
 type WorkloadIdentityRecoveryManager struct {
-	Credential     azcore.TokenCredential
-	Scope          Scope
-	clientsFactory func() (*identityClients, error)
+	Credential      azcore.TokenCredential
+	Scope           Scope
+	TracingProvider aztracing.Provider
+	clientsFactory  func() (*identityClients, error)
 }
 
 func (m *WorkloadIdentityRecoveryManager) clients() (*identityClients, error) {
 	if m.clientsFactory != nil {
 		return m.clientsFactory()
 	}
-	return newIdentityClients(m.Scope, m.Credential)
+	return newIdentityClients(m.Scope, m.Credential, m.TracingProvider)
 }
 
 func (m *WorkloadIdentityRecoveryManager) loadAndValidateRecoveryState(
