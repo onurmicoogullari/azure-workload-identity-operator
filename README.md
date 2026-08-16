@@ -1,27 +1,44 @@
 # azure-workload-identity-operator
 
+A Kubernetes operator for managing Azure workload identity infrastructure and
+the cluster's OpenID Connect issuer integration.
+
 ## Support status
 
-The operator is currently **OpenShift-first**, and OpenShift 4.22.8 is a
-required production compatibility target. This does not establish a minimum
-supported OpenShift version or exclude older releases. The Helm chart and
-controller remain portable Kubernetes APIs, and chart lifecycle plus admission
-are tested on Kind, but the complete Azure issuer and token-exchange path is
-production verified only on OpenShift through CRC. Full vanilla Kubernetes/Azure e2e
-coverage is planned in a follow-up branch; until that exists, non-OpenShift use
-is compatibility preview rather than a production support claim.
+The operator is currently **OpenShift-first**, with OpenShift 4.22.8 as the
+required production acceptance target. Chart lifecycle and admission are also
+tested on Kind, but the complete Azure issuer and token-exchange path is not yet
+covered by vanilla Kubernetes end-to-end tests. Other Kubernetes distributions
+are therefore compatibility preview rather than a production support claim.
 
-## Deploy
+## Install
 
-The supported installation package is the first-party Helm chart under
-`dist/chart`. It installs the operator, CRDs, validating webhooks, certificate
-resources, and the bundled Azure Workload Identity mutating webhook. Install
-cert-manager first, then provide the required platform-owned Azure scope and an
-existing credentials Secret:
+The supported release package is the OCI Helm chart. It installs the operator,
+CRDs, validating webhooks, certificate resources, and the bundled Azure
+Workload Identity mutating webhook.
+
+Before installation, provide:
+
+- cert-manager;
+- an external mechanism that creates a Secret containing `AZURE_CLIENT_ID`,
+  `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET`; and
+- the cluster's Azure subscription ID, resource group, and location.
+
+Let Helm or the GitOps tool create the operator namespace during installation.
+
+Keep credentials out of Git and Helm values. See the
+[chart guide](dist/chart/README.md) for the complete installation contract,
+availability profiles, authentication options, upgrades, and uninstall.
+
+### Helm
+
+OCI charts do not use `helm repo add`. Install a public chart directly from its
+`oci://` reference; use `helm registry login` first for a private mirror.
 
 ```bash
-helm dependency build --skip-refresh ./dist/chart
-helm install azure-workload-identity-operator ./dist/chart \
+helm upgrade --install azure-workload-identity-operator \
+  oci://ghcr.io/onurmicoogullari/charts/azure-workload-identity-operator \
+  --version 0.1.0 \
   --namespace azure-workload-identity-operator-system \
   --create-namespace \
   --set-string azure.tenantId='<tenant-id>' \
@@ -31,37 +48,47 @@ helm install azure-workload-identity-operator ./dist/chart \
   --set-string azure.credentials.existingSecret='<secret-name>'
 ```
 
-The Secret contains `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and
-`AZURE_CLIENT_SECRET`; secret values are never Helm values. See the
-[chart documentation](dist/chart/README.md) for the complete contract,
-OpenShift behavior, workload-identity migration, upgrades, and uninstall.
-The operator follows the chosen Helm release namespace; the bundled mutating
-webhook is isolated in the chart-owned
-`microsoft-azure-workload-identity-webhook-system` namespace.
+If the external mechanism has not created the Secret yet, the manager Pods wait
+without starting. They start automatically after the Secret becomes available.
 
-The Kustomize manifests remain Kubebuilder development inputs and are not a
-second supported production packaging contract.
+### GitOps
 
-## E2E Tests
+GitOps tools can consume the OCI chart directly, inflate it through Kustomize
+`helmCharts`, or apply reviewed YAML rendered from an exact chart release. See
+the [GitOps guide](docs/gitops.md) for minimal Argo CD and Kustomize examples
+and the shared safety requirements. Application composition remains a platform
+concern.
 
-The local OpenShift/CRC e2e test lives in `test/e2e/openshift/`.
+## Azure scope boundary
+
+One operator installation owns one Azure subscription, resource group, and
+location. The chart records that identity in a retained immutable ConfigMap,
+and every manager Pod verifies the mounted values before creating Kubernetes or
+Azure clients. Startup fails closed when the anchor is missing, malformed, or
+different from the configured scope.
+
+This runtime boundary also protects GitOps rendering, where Helm `lookup`
+cannot inspect the live cluster. Changing Azure scope requires an explicit
+migration; see the [chart guide](dist/chart/README.md#azure-scope-boundary).
+
+## E2E tests
+
+The local OpenShift/CRC end-to-end test lives in `test/e2e/openshift/`:
 
 ```bash
 make test-e2e-crc
 ```
 
-By default, the Azure CLI identity creates a short-lived Entra application and
-Service Principal for the in-cluster operator, grants its temporary test role,
-and deletes both during cleanup. A complete exported `AZURE_CLIENT_ID`,
-`AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET` trio remains available as a
-fallback for tenants that prohibit application creation.
-
-See `test/README.md` for the test layout and
-`test/e2e/openshift/README.md` for OpenShift-specific prerequisites, behavior,
-and troubleshooting.
+It creates temporary Azure resources and, by default, a short-lived Entra
+application and Service Principal for the in-cluster operator. See
+[`test/README.md`](test/README.md) and the
+[OpenShift test guide](test/e2e/openshift/README.md) for prerequisites,
+behavior, and cleanup.
 
 ## Operations
 
+- [Helm chart](dist/chart/README.md)
+- [GitOps installation](docs/gitops.md)
 - [Azure and Kubernetes permissions](docs/permissions.md)
 - [Telemetry and OpenTelemetry tracing](docs/telemetry.md)
 - [Controlled workload identity recovery](docs/recovery.md)

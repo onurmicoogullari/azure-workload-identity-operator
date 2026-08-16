@@ -52,6 +52,7 @@
       "type": "object",
       "required": [
         "replicas",
+        "podDisruptionBudget",
         "refreshIntervals",
         "image",
         "extraEnv",
@@ -62,6 +63,30 @@
         "replicas": {
           "type": "integer",
           "minimum": 1
+        },
+        "podDisruptionBudget": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "minAvailable"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "minAvailable": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "string",
+                  "pattern": "^([1-9][0-9]?|100)%$"
+                }
+              ]
+            }
+          }
         },
         "refreshIntervals": {
           "type": "object",
@@ -296,14 +321,20 @@
       "type": "object",
       "required": [
         "enabled",
+        "replicaCount",
         "namespaceOverride",
         "disableCertRotation",
         "certManagerCertificateName",
+        "podDisruptionBudget",
         "service"
       ],
       "properties": {
         "enabled": {
           "type": "boolean"
+        },
+        "replicaCount": {
+          "type": "integer",
+          "minimum": 1
         },
         "namespaceOverride": {
           "type": "string",
@@ -316,6 +347,30 @@
         "certManagerCertificateName": {
           "type": "string",
           "const": "azure-wi-webhook-serving-cert"
+        },
+        "podDisruptionBudget": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "minAvailable"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "minAvailable": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "string",
+                  "pattern": "^([1-9][0-9]?|100)%$"
+                }
+              ]
+            }
+          }
         },
         "service": {
           "type": "object",

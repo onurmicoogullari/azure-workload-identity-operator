@@ -47,17 +47,14 @@ behavior, and the OpenShift 4.22.8 acceptance procedure.
 
 ## Service Principal bootstrap
 
-Create a Secret in the release namespace. The Secret is not part of the Helm
-release and its values must never be placed in a values file:
+Reference a Secret in the release namespace. The Secret is not part of the Helm
+release and its values must never be placed in a values file. Prefer an external
+Secret mechanism for production.
 
-```bash
-kubectl create namespace azure-workload-identity-operator-system
-kubectl create secret generic azure-workload-identity-operator-azure-credentials \
-  --namespace azure-workload-identity-operator-system \
-  --from-literal=AZURE_CLIENT_ID='<client-id>' \
-  --from-literal=AZURE_TENANT_ID='<tenant-id>' \
-  --from-literal=AZURE_CLIENT_SECRET='<client-secret>'
-```
+Let Helm create the namespace with the installation command below. If the
+Secret is not ready when Helm creates the Deployment, Kubernetes starts none of
+the manager containers and the kubelet retries periodically. After the external
+mechanism creates the Secret, the existing Pods start automatically.
 
 Install from source:
 
@@ -65,6 +62,7 @@ Install from source:
 helm dependency build --skip-refresh ./dist/chart
 helm install azure-workload-identity-operator ./dist/chart \
   --namespace azure-workload-identity-operator-system \
+  --create-namespace \
   --set-string azure.tenantId='<tenant-id>' \
   --set-string azure.subscriptionId='<subscription-id>' \
   --set-string azure.resourceGroupName='<resource-group>' \
@@ -87,10 +85,72 @@ helm install azure-workload-identity-operator \
   --set-string azure.credentials.existingSecret=azure-workload-identity-operator-azure-credentials
 ```
 
+For a manual bootstrap, run one of those Helm installations without `--wait`,
+then create the Secret after Helm has created the namespace:
+
+```bash
+kubectl create secret generic azure-workload-identity-operator-azure-credentials \
+  --namespace azure-workload-identity-operator-system \
+  --from-literal=AZURE_CLIENT_ID='<client-id>' \
+  --from-literal=AZURE_TENANT_ID='<tenant-id>' \
+  --from-literal=AZURE_CLIENT_SECRET='<client-secret>'
+kubectl rollout status deployment/azure-workload-identity-operator-controller-manager \
+  --namespace azure-workload-identity-operator-system
+```
+
+## Availability profiles
+
+The default values are the production profile: two manager replicas, two
+mutating-webhook replicas, and a PodDisruptionBudget with `minAvailable: 1`
+for each workload. [`values-production.yaml`](values-production.yaml) repeats
+that availability contract explicitly for deployment repositories that prefer
+to declare a named profile.
+
+[`values-single-replica.yaml`](values-single-replica.yaml) runs one replica of
+each workload and disables both PodDisruptionBudgets. It is intended for local
+development, disposable validation, and constrained clusters where admission
+and controller failover are not required. It is not a production profile.
+
+The production profile matches the defaults, so production installs do not
+need an additional values file. To inspect or copy either named profile, pull
+the exact chart release first:
+
+```bash
+helm pull \
+  oci://ghcr.io/onurmicoogullari/charts/azure-workload-identity-operator \
+  --version '<version>' \
+  --untar \
+  --untardir ./vendor
+```
+
+Apply the selected profile before environment-specific values:
+
+```bash
+helm upgrade --install azure-workload-identity-operator \
+  oci://ghcr.io/onurmicoogullari/charts/azure-workload-identity-operator \
+  --version '<version>' \
+  --namespace azure-workload-identity-operator-system \
+  --create-namespace \
+  --values ./vendor/azure-workload-identity-operator/values-production.yaml \
+  --values ./values-environment.yaml
+```
+
+`manager.podDisruptionBudget.enabled` and
+`azureWorkloadIdentityWebhook.podDisruptionBudget.enabled` control whether the
+two budgets render. Their `minAvailable` values are independently configurable.
+Disabling a PDB does not change replica counts, so set both deliberately when
+creating a custom profile.
+
+## Azure scope boundary
+
 `azure.subscriptionId`, `azure.resourceGroupName`, and `azure.location` are
-installation identity. The chart records them and rejects in-place Helm
-upgrades that change them. Move to a deliberately planned new installation to
-change Azure scope.
+installation identity. The chart records them in an immutable retained
+ConfigMap, mounts that anchor into every manager Pod, and rejects startup when
+the configured scope differs or the anchor is missing or malformed. Helm
+`lookup` provides an earlier interactive error but is not the enforcement
+boundary. Move to a deliberately planned new installation to change Azure
+scope. For Argo CD and Kustomize consumption examples, see the
+[GitOps guide](../../docs/gitops.md).
 
 ## Authentication evolution
 
@@ -127,10 +187,12 @@ a Secret. Optional user-facing RBAC helper roles remain disabled by default.
 
 ## Namespace, naming, and scheduling
 
-Operator resources use `.Release.Namespace`; the chart does not create that
-namespace. The canonical operator namespace is a convention for predictable
-operations, not a hard-coded destination. A namespace move is a migration
-because cluster-scoped resources use stable, release-independent names.
+Operator resources use `.Release.Namespace`; the chart does not render that
+namespace. Let Helm create it with `--create-namespace`, or use the deployment
+tool's equivalent such as Argo CD `CreateNamespace=true`. The canonical
+operator namespace is a convention for predictable operations, not a hard-coded
+destination. A namespace move is a migration because cluster-scoped resources
+use stable, release-independent names.
 
 The bundled Azure Workload Identity webhook is a cluster singleton in the
 fixed `microsoft-azure-workload-identity-webhook-system` namespace. The chart creates and
@@ -178,7 +240,9 @@ normal rollback/recovery path. Do not delete custom resources merely to
 reinstall the chart. The `azure-workload-identity-operator-startup-config`
 ConfigMap is also retained as the Azure-scope identity anchor, so reinstall
 cannot silently change subscription, resource group, or location for retained
-custom resources.
+custom resources. It is immutable and carries Argo CD `Prune=false` and
+`Delete=false` retention. Deleting and recreating it is a privileged,
+explicit scope-migration action, not an upgrade or rollback technique.
 
 The Azure credential Secret is always externally owned and retained. Other
 chart resources, including webhook configurations, certificate resources, and

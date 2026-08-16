@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: azure-workload-identity-operator
+  namespace: argocd
+spec:
+  # Replace this when the installation uses a restricted AppProject.
+  project: default
+  source:
+    # OCI Helm repositories omit the oci:// prefix in an Argo CD Application.
+    repoURL: ghcr.io/onurmicoogullari/charts
+    chart: azure-workload-identity-operator
+    targetRevision: 0.1.0
+    helm:
+      releaseName: azure-workload-identity-operator
+      values: |
+        azure:
+          tenantId: 00000000-0000-0000-0000-000000000000
+          subscriptionId: 00000000-0000-0000-0000-000000000000
+          resourceGroupName: rg-platform-workload-identity
+          location: swedencentral
+          credentials:
+            existingSecret: azure-workload-identity-operator-azure-credentials
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: azure-workload-identity-operator-system
+  syncPolicy:
+    automated:
+      enabled: true
+      prune: false
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - FailOnSharedResource=true

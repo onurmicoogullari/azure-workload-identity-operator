@@ -25,9 +25,9 @@ type Scope struct {
 
 func NewScope(subscriptionID, resourceGroupName, location string) (Scope, error) {
 	scope := Scope{
-		subscriptionID:    subscriptionID,
-		resourceGroupName: resourceGroupName,
-		location:          location,
+		subscriptionID:    strings.ToLower(strings.TrimSpace(subscriptionID)),
+		resourceGroupName: strings.TrimSpace(resourceGroupName),
+		location:          strings.ToLower(strings.TrimSpace(location)),
 	}
 	if err := scope.Validate(); err != nil {
 		return Scope{}, err

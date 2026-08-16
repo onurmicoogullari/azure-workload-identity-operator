@@ -3,6 +3,7 @@
 package chart_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	testutil "github.com/onurmicoogullari/azure-workload-identity-operator/test/utils"
+	corev1 "k8s.io/api/core/v1"
 )
 
 const (
@@ -77,13 +79,63 @@ func TestHelmChartLifecycle(t *testing.T) {
 		runner.run(t, "kubectl", "apply", "--server-side", "--dry-run=server", "-f", manifestPath)
 	})
 
-	stage(t, "install, upgrade, certificates, and RBAC", func(t *testing.T) {
+	stage(t, "GitOps template and apply scope boundary", func(t *testing.T) {
 		runner.run(t, "kubectl", "create", "secret", "generic", credentialsSecret,
 			"--namespace", operatorNamespace,
 			"--from-literal=AZURE_CLIENT_ID=00000000-0000-0000-0000-000000000001",
 			"--from-literal=AZURE_TENANT_ID=00000000-0000-0000-0000-000000000000",
 			"--from-literal=AZURE_CLIENT_SECRET=not-a-real-secret")
 
+		initialManifest := runner.run(t, "helm", gitOpsTemplateArguments(defaultLocation)...)
+		initialManifestPath := writeTempFile(t, "gitops-initial.yaml", initialManifest)
+		runner.run(t, "kubectl", "apply", "-f", initialManifestPath)
+		runner.run(t, "kubectl", "rollout", "status", "deployment/"+operatorDeployment,
+			"--namespace", operatorNamespace, "--timeout=5m")
+
+		runner.run(t, "kubectl", "apply", "-f", initialManifestPath)
+		runner.run(t, "kubectl", "rollout", "status", "deployment/"+operatorDeployment,
+			"--namespace", operatorNamespace, "--timeout=5m")
+
+		changedManifest := runner.run(t, "helm", gitOpsTemplateArguments("westus")...)
+		changedManifestPath := writeTempFile(t, "gitops-changed-scope.yaml", changedManifest)
+		output, applyErr := runner.result("kubectl", "apply", "-f", changedManifestPath)
+		if applyErr == nil || !strings.Contains(strings.ToLower(output), "immutable") {
+			t.Fatalf("changed-scope apply did not fail on the immutable anchor: %v\n%s", applyErr, output)
+		}
+
+		eventually(t, time.Minute, "changed Deployment template to be applied after the ConfigMap rejection", func() (bool, string) {
+			args, commandErr := runner.result("kubectl", "get", "deployment", operatorDeployment,
+				"--namespace", operatorNamespace,
+				"-o", "jsonpath={.spec.template.spec.containers[0].args}")
+			return commandErr == nil && strings.Contains(args, "--azure-location=westus"), args
+		})
+		eventually(t, 2*time.Minute, "changed-scope manager Pod to fail startup validation", func() (bool, string) {
+			return changedScopePodFailed(runner)
+		})
+		eventually(t, time.Minute, "old manager replicas to remain available", func() (bool, string) {
+			available, commandErr := runner.result("kubectl", "get", "deployment", operatorDeployment,
+				"--namespace", operatorNamespace, "-o", "jsonpath={.status.availableReplicas}")
+			count, parseErr := strconv.Atoi(strings.TrimSpace(available))
+			return commandErr == nil && parseErr == nil && count >= 2, available
+		})
+		anchorLocation := runner.run(t, "kubectl", "get", "configmap",
+			"azure-workload-identity-operator-startup-config", "--namespace", operatorNamespace,
+			"-o", "jsonpath={.data.location}")
+		if anchorLocation != defaultLocation {
+			t.Fatalf("immutable startup scope changed to %q", anchorLocation)
+		}
+		if output, err := runner.result("kubectl", "rollout", "status", "deployment/"+operatorDeployment,
+			"--namespace", operatorNamespace, "--timeout=15s"); err == nil {
+			t.Fatalf("changed-scope rollout unexpectedly completed:\n%s", output)
+		}
+
+		runner.run(t, "kubectl", "apply", "-f", initialManifestPath)
+		runner.run(t, "kubectl", "rollout", "status", "deployment/"+operatorDeployment,
+			"--namespace", operatorNamespace, "--timeout=5m")
+		runner.run(t, "kubectl", "delete", "-f", initialManifestPath, "--ignore-not-found=true", "--wait=true")
+	})
+
+	stage(t, "install, upgrade, certificates, and RBAC", func(t *testing.T) {
 		runner.run(t, "helm", installArguments(operatorRelease, defaultLocation, true)...)
 		runner.run(t, "helm", "upgrade", operatorRelease, chartPath,
 			"--namespace", operatorNamespace, "--reuse-values", "--wait", "--timeout", "5m")
@@ -266,6 +318,56 @@ func installArguments(release, location string, includeRuntimeValues bool) []str
 		)
 	}
 	return args
+}
+
+func gitOpsTemplateArguments(location string) []string {
+	args := []string{"template", operatorRelease, chartPath, "--namespace", operatorNamespace}
+	args = append(args, requiredValues(location)...)
+	return append(args,
+		setString, "azure.credentials.existingSecret="+credentialsSecret,
+		setString, "manager.image.repository=controller",
+		setString, "manager.image.tag=latest",
+		"--set", "manager.image.pullPolicy=Never",
+		"--set", "azureWorkloadIdentityWebhook.enabled=false",
+	)
+}
+
+func changedScopePodFailed(runner commandRunner) (bool, string) {
+	podsJSON, err := runner.result("kubectl", "get", "pods", "--namespace", operatorNamespace,
+		"--selector=control-plane=controller-manager", "-o", "json")
+	if err != nil {
+		return false, podsJSON
+	}
+	var pods corev1.PodList
+	if err := json.Unmarshal([]byte(podsJSON), &pods); err != nil {
+		return false, err.Error()
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if len(pod.Spec.Containers) == 0 || !containsArgument(pod.Spec.Containers[0].Args, "--azure-location=westus") {
+			continue
+		}
+		for _, previous := range []bool{false, true} {
+			args := []string{"logs", "pod/" + pod.Name, "--namespace", operatorNamespace, "--container", "manager"}
+			if previous {
+				args = append(args, "--previous")
+			}
+			logs, _ := runner.result("kubectl", args...)
+			if strings.Contains(logs, "Azure startup scope validation failed") {
+				return true, logs
+			}
+		}
+	}
+	return false, podsJSON
+}
+
+func containsArgument(args []string, expected string) bool {
+	for _, arg := range args {
+		if arg == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func assertCanI(t *testing.T, runner commandRunner, expected, serviceAccount, verb, resource string, extra ...string) {

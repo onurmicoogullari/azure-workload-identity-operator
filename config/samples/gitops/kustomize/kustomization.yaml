@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: azure-workload-identity-operator-system
+helmCharts:
+  - name: azure-workload-identity-operator
+    repo: oci://ghcr.io/onurmicoogullari/charts
+    # Pin an exact published chart version; do not use a range or mutable label.
+    version: 0.1.0
+    releaseName: azure-workload-identity-operator
+    namespace: azure-workload-identity-operator-system
+    valuesFile: values.yaml

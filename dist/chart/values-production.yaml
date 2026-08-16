@@ -1,0 +1,13 @@
+# Production availability profile. These settings match the chart defaults and
+# are repeated here so GitOps consumers can declare the intended profile.
+manager:
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+azureWorkloadIdentityWebhook:
+  replicaCount: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1

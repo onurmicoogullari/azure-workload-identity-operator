@@ -46,6 +46,7 @@ podLabels: {}
 podAnnotations: {}
 mutatingWebhookNamespaceSelector: {}
 podDisruptionBudget:
+  enabled: true
   minAvailable: 1
 customTokenEndpoint:
   annotationSuffix: ""

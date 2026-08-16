@@ -145,6 +145,7 @@ func main() {
 	var workloadIdentityRefreshInterval time.Duration
 	var telemetryTracingEnabled bool
 	var azureScopeFlags azureScopeFlagValues
+	var azureScopeAnchorDirectory string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -167,6 +168,13 @@ func main() {
 		"Enable in-process OpenTelemetry tracing configured through standard OTEL environment variables.")
 	registerOIDCIssuerRefreshIntervalFlags(flag.CommandLine, &oidcIssuerRefreshInterval)
 	registerAzureScopeFlags(flag.CommandLine, &azureScopeFlags)
+	flag.StringVar(
+		&azureScopeAnchorDirectory,
+		"azure-scope-anchor-directory",
+		"",
+		"Directory containing the retained Azure startup scope. "+
+			"When set, startup fails unless it matches the configured scope.",
+	)
 	flag.DurationVar(
 		&workloadIdentityRefreshInterval,
 		"workload-identity-refresh-interval",
@@ -209,6 +217,12 @@ func main() {
 	if err != nil {
 		setupLog.Error(err, "Invalid Azure scope configuration")
 		os.Exit(1)
+	}
+	if azureScopeAnchorDirectory != "" {
+		if err := azure.ValidateScopeAnchor(azureScope, azureScopeAnchorDirectory); err != nil {
+			setupLog.Error(err, "Azure startup scope validation failed")
+			os.Exit(1)
+		}
 	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled

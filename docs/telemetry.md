@@ -68,9 +68,10 @@ manager:
 ```
 
 The hooks reject replacement of the operator's fixed environment variables,
-the `webhook-certs` volume, and its mount path. Secret, ConfigMap, and projected
-volumes work with the OpenShift `restricted-v2` SCC; hostPath and privileged
-telemetry mechanisms are intentionally outside the supported contract.
+the `webhook-certs` and Azure startup-scope volumes, and their mount paths.
+Secret, ConfigMap, and projected volumes work with the OpenShift
+`restricted-v2` SCC; hostPath and privileged telemetry mechanisms are
+intentionally outside the supported contract.
 
 ## Sampling and buffering
 

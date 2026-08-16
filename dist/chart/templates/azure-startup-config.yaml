@@ -1,18 +1,24 @@
 {{- $name := "azure-workload-identity-operator-startup-config" -}}
+{{- $subscriptionID := required "azure.subscriptionId is required" .Values.azure.subscriptionId -}}
+{{- $resourceGroupName := required "azure.resourceGroupName is required" .Values.azure.resourceGroupName -}}
+{{- $location := required "azure.location is required" .Values.azure.location -}}
 {{- $existing := lookup "v1" "ConfigMap" .Release.Namespace $name -}}
 {{- if $existing -}}
-  {{- $subscriptionID := index $existing.data "subscriptionId" | default "" -}}
-  {{- $resourceGroupName := index $existing.data "resourceGroupName" | default "" -}}
-  {{- $location := index $existing.data "location" | default "" -}}
-  {{- if ne $subscriptionID .Values.azure.subscriptionId -}}
+  {{- $existingSubscriptionID := index $existing.data "subscriptionId" | default "" -}}
+  {{- $existingResourceGroupName := index $existing.data "resourceGroupName" | default "" -}}
+  {{- $existingLocation := index $existing.data "location" | default "" -}}
+  {{- if ne (lower (trim $existingSubscriptionID)) (lower (trim $subscriptionID)) -}}
     {{- fail "azure.subscriptionId is immutable after installation; migrate the release to change Azure scope" -}}
   {{- end -}}
-  {{- if ne $resourceGroupName .Values.azure.resourceGroupName -}}
+  {{- if ne (lower (trim $existingResourceGroupName)) (lower (trim $resourceGroupName)) -}}
     {{- fail "azure.resourceGroupName is immutable after installation; migrate the release to change Azure scope" -}}
   {{- end -}}
-  {{- if ne $location .Values.azure.location -}}
+  {{- if ne (lower (trim $existingLocation)) (lower (trim $location)) -}}
     {{- fail "azure.location is immutable after installation; migrate the release to change Azure scope" -}}
   {{- end -}}
+  {{- $subscriptionID = $existingSubscriptionID -}}
+  {{- $resourceGroupName = $existingResourceGroupName -}}
+  {{- $location = $existingLocation -}}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
@@ -20,10 +26,13 @@ metadata:
   name: {{ $name }}
   namespace: {{ .Release.Namespace }}
   annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    argocd.argoproj.io/sync-wave: "-1"
     helm.sh/resource-policy: keep
   labels:
     {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
+immutable: true
 data:
-  subscriptionId: {{ required "azure.subscriptionId is required" .Values.azure.subscriptionId | quote }}
-  resourceGroupName: {{ required "azure.resourceGroupName is required" .Values.azure.resourceGroupName | quote }}
-  location: {{ required "azure.location is required" .Values.azure.location | quote }}
+  subscriptionId: {{ $subscriptionID | quote }}
+  resourceGroupName: {{ $resourceGroupName | quote }}
+  location: {{ $location | quote }}

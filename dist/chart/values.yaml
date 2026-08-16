@@ -12,6 +12,9 @@ azure:
 
 manager:
   replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
   refreshIntervals:
     oidcIssuer: 5m
     workloadIdentity: 5m
@@ -165,6 +168,7 @@ azureWorkloadIdentityWebhook:
     readOnlyRootFilesystem: true
     runAsNonRoot: true
   podDisruptionBudget:
+    enabled: true
     minAvailable: 1
   config:
     # The parent chart owns azure-wi-webhook-config so azure.tenantId remains

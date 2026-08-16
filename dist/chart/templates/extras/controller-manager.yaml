@@ -1,3 +1,4 @@
+{{- if .Values.manager.podDisruptionBudget.enabled }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -7,8 +8,9 @@ metadata:
     {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
     control-plane: controller-manager
 spec:
-  minAvailable: 1
+  minAvailable: {{ .Values.manager.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "azure-workload-identity-operator.name" . }}
       control-plane: controller-manager
+{{- end }}

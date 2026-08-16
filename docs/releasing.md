@@ -50,12 +50,27 @@ Any source change or new candidate workflow run creates a different candidate
 and requires a fresh CRC/Azure pass.
 
 CRC currently provides regression coverage but does not prove compatibility
-with the required OpenShift 4.22.8 target. Before promotion, run the focused
-acceptance procedure in [Telemetry](telemetry.md) against a disposable 4.22.8
-environment or an explicitly approved pre-production project on the target
-cluster. Record the candidate commit, OpenShift patch version, SCC selected for
-the manager Pods, and the disabled/enabled/failure-mode results with the release
-evidence.
+with the required OpenShift 4.22.8 target. Before promotion, use a disposable
+4.22.8 cluster or an explicitly approved pre-production project and record:
+
+1. the exact candidate commit, chart archive checksum, and both image digests;
+2. cert-manager, optional OpenTelemetry, Argo CD, and OpenShift patch versions;
+3. the SCC selected for the manager and bundled webhook Pods;
+4. first install, same-scope reapply or upgrade, Pod restart, and admission
+   health;
+5. a template-then-apply changed-scope test showing the immutable anchor
+   unchanged, the new manager ReplicaSet rejected, and old replicas still
+   Ready;
+6. external Secret rotation and confirmation that no credential exists in Git
+   or Application parameters;
+7. normal Azure reconciliation and cleanup under the target proxy, trust, DNS,
+   egress, and registry-mirror policy; and
+8. the tracing-disabled, enabled, and failure-mode checks in
+   [Telemetry](telemetry.md#network-and-platform-operation).
+
+Template-then-apply scope validation is a normal release gate because GitOps is
+a supported installation path, not a release-specific option. Do not use CRC as
+evidence for the 4.22.8 acceptance gate.
 
 ## 3. Promote the validated candidate
 

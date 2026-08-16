@@ -10,6 +10,8 @@ rendered=$tmpdir/rendered.yaml
 existing_secret_rendered=$tmpdir/existing-secret.yaml
 digest_rendered=$tmpdir/digest.yaml
 telemetry_rendered=$tmpdir/telemetry.yaml
+production_profile_rendered=$tmpdir/production-profile.yaml
+single_replica_profile_rendered=$tmpdir/single-replica-profile.yaml
 manager_role_rendered=$tmpdir/manager-role.yaml
 bundled_webhook_service_rendered=$tmpdir/bundled-webhook-service.yaml
 chart_rbac_rules=$tmpdir/chart-rbac-rules.yaml
@@ -24,6 +26,29 @@ required_values=(
   --set-string azure.resourceGroupName=rg-chart-test
   --set-string azure.location=swedencentral
 )
+
+assert_resource_contains() {
+  local manifest=$1
+  local kind=$2
+  local name=$3
+  local expected=$4
+
+  if ! awk -v kind="$kind" -v name="$name" -v expected="$expected" '
+    /^---$/ {
+      matched_kind = 0
+      matched_name = 0
+      matched_expected = 0
+    }
+    $0 == "kind: " kind { matched_kind = 1 }
+    $0 == "  name: " name { matched_name = 1 }
+    $0 == expected { matched_expected = 1 }
+    matched_kind && matched_name && matched_expected { found = 1 }
+    END { exit !found }
+  ' "$manifest"; then
+    echo "$kind/$name is missing expected content: $expected" >&2
+    exit 1
+  fi
+}
 
 render_and_verify_source_sync() {
   "$helm_binary" lint "$chart_dir" "${required_values[@]}"
@@ -78,6 +103,16 @@ render_and_verify_source_sync() {
     --set-string 'manager.extraVolumeMounts[0].name=operator-otlp-ca' \
     --set-string 'manager.extraVolumeMounts[0].mountPath=/var/run/operator-otlp-ca' \
     "${required_values[@]}" >"$telemetry_rendered"
+
+  "$helm_binary" template "$release_name" "$chart_dir" \
+    --namespace "$namespace" \
+    --values "$chart_dir/values-production.yaml" \
+    "${required_values[@]}" >"$production_profile_rendered"
+
+  "$helm_binary" template "$release_name" "$chart_dir" \
+    --namespace "$namespace" \
+    --values "$chart_dir/values-single-replica.yaml" \
+    "${required_values[@]}" >"$single_replica_profile_rendered"
 }
 
 assert_template_rejected() {
@@ -145,10 +180,20 @@ verify_rejected_values() {
     --set-string 'manager.extraVolumes[0].name=webhook-certs' \
     --set-string 'manager.extraVolumes[0].emptyDir={}'
 
+  assert_template_rejected "chart unexpectedly allowed replacement of the Azure startup scope volume" \
+    "${required_values[@]}" \
+    --set-string 'manager.extraVolumes[0].name=azure-startup-scope' \
+    --set-string 'manager.extraVolumes[0].emptyDir={}'
+
   assert_template_rejected "chart unexpectedly allowed replacement of the webhook certificate mount" \
     "${required_values[@]}" \
     --set-string 'manager.extraVolumeMounts[0].name=webhook-certs' \
     --set-string 'manager.extraVolumeMounts[0].mountPath=/tmp/replacement'
+
+  assert_template_rejected "chart unexpectedly allowed an overlapping Azure startup scope mount" \
+    "${required_values[@]}" \
+    --set-string 'manager.extraVolumeMounts[0].name=forged-scope' \
+    --set-string 'manager.extraVolumeMounts[0].mountPath=/var/run/azure-workload-identity-operator/startup-scope/location'
 }
 
 verify_rendered_contracts() {
@@ -166,6 +211,11 @@ verify_rendered_contracts() {
     'containerPort: 9443' \
     'targetPort: webhook-server' \
     'serviceaccounts/token' \
+    'argocd.argoproj.io/sync-options: Prune=false,Delete=false' \
+    'argocd.argoproj.io/sync-wave: "-1"' \
+    'immutable: true' \
+    '--azure-scope-anchor-directory=/var/run/azure-workload-identity-operator/startup-scope' \
+    'name: azure-startup-scope' \
     '"helm.sh/resource-policy": keep'; do
     grep -Fq -- "$expected" "$rendered" || {
       echo "rendered chart is missing: $expected" >&2
@@ -181,9 +231,14 @@ verify_rendered_contracts() {
     echo "rendered chart allowed user values to replace an ownership or selector label" >&2
     exit 1
   fi
-  if ! grep -A4 'name: azure-workload-identity-operator-startup-config' "$rendered" | \
+  if ! grep -A12 'name: azure-workload-identity-operator-startup-config' "$rendered" | \
     grep -Fq 'helm.sh/resource-policy: keep'; then
     echo "Azure startup scope ConfigMap is not retained across uninstall" >&2
+    exit 1
+  fi
+  if ! grep -A12 'name: azure-workload-identity-operator-startup-config' "$rendered" | \
+    grep -Fq 'argocd.argoproj.io/sync-options: Prune=false,Delete=false'; then
+    echo "Azure startup scope ConfigMap is not retained by Argo CD" >&2
     exit 1
   fi
   if [[ -e dist/vendor/workload-identity-webhook/templates/azure-wi-webhook-manager-role-role.yaml ||
@@ -219,6 +274,26 @@ verify_rendered_contracts() {
     echo "disabling the bundled Azure webhook unexpectedly rendered it" >&2
     exit 1
   fi
+
+  production_pdb_count=$(grep -c '^kind: PodDisruptionBudget$' "$production_profile_rendered" || true)
+  if [[ $production_pdb_count -ne 2 ]]; then
+    echo "production profile rendered $production_pdb_count PodDisruptionBudgets instead of 2" >&2
+    exit 1
+  fi
+  assert_resource_contains "$production_profile_rendered" Deployment \
+    azure-workload-identity-operator-controller-manager '  replicas: 2'
+  assert_resource_contains "$production_profile_rendered" Deployment \
+    azure-wi-webhook-controller-manager '  replicas: 2'
+
+  single_replica_pdb_count=$(grep -c '^kind: PodDisruptionBudget$' "$single_replica_profile_rendered" || true)
+  if [[ $single_replica_pdb_count -ne 0 ]]; then
+    echo "single-replica profile unexpectedly rendered $single_replica_pdb_count PodDisruptionBudgets" >&2
+    exit 1
+  fi
+  assert_resource_contains "$single_replica_profile_rendered" Deployment \
+    azure-workload-identity-operator-controller-manager '  replicas: 1'
+  assert_resource_contains "$single_replica_profile_rendered" Deployment \
+    azure-wi-webhook-controller-manager '  replicas: 1'
 }
 
 verify_crd_sync() {
