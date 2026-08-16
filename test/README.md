@@ -16,6 +16,10 @@ Current cross-package suites are:
   admission integration tests, run against the Kind cluster created by CI.
 - `test/e2e/kind`: the Kubebuilder manager deployment and metrics E2E suite on
   an isolated Kind cluster.
+- `test/e2e/kind/upgrade`: a dedicated Go suite that builds and packages two
+  manually selected Git revisions, qualifies the baseline-to-candidate upgrade
+  on isolated Kind, and rolls back only when normalized CRD specifications are
+  equal.
 - `test/e2e/openshift`: the packaged OpenShift/CRC and real Azure E2E workflow.
 
 Run them through their repository entry points:
@@ -24,8 +28,15 @@ Run them through their repository entry points:
 make vulncheck              # Reachable Go vulnerability scan
 make test-chart-integration # Existing prepared Kubernetes cluster
 make test-e2e-kind          # Creates and removes its Kind cluster
+make test-e2e-kind-upgrade BASELINE_REF=<ref> CANDIDATE_REF=<ref>
 make test-e2e-crc           # Requires a fresh, running CRC cluster
 ```
+
+The manual upgrade suite resolves `BASELINE_REF` and `CANDIDATE_REF` to distinct
+full Git commits before creating Kind. Its runner isolates Kubernetes and Helm
+client state and accepts either Podman or Docker. See
+`test/e2e/kind/upgrade/README.md` for its release-qualification scope,
+guarantees, roll-forward-only CRD policy, and local prerequisites.
 
 `config/e2e` remains under `config` because it is a Kustomize deployment fixture
 consumed by the Kind E2E suite, not executable test code.

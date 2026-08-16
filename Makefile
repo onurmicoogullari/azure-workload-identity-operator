@@ -72,6 +72,21 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
 KIND_CLUSTER ?= azure-workload-identity-operator-test-e2e
+KIND_UPGRADE_CLUSTER ?= azure-workload-identity-operator-upgrade-e2e
+KIND_UPGRADE_NODE_IMAGE ?= kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+KIND_UPGRADE_PROVIDER ?= $(if $(filter podman,$(notdir $(CONTAINER_TOOL))),podman,docker)
+KIND_UPGRADE_VERSION ?= v0.32.0
+HELM_UPGRADE_VERSION ?= v4.2.3
+UPGRADE_E2E_KEEP_CLUSTER ?= false
+BASELINE_REF ?= $(UPGRADE_E2E_BASELINE_REF)
+CANDIDATE_REF ?= $(UPGRADE_E2E_CANDIDATE_REF)
+GIT ?= git
+ifneq ($(strip $(BASELINE_REF)),)
+BASELINE_COMMIT := $(shell "$(GIT)" rev-parse --verify "$(BASELINE_REF)^{commit}" 2>/dev/null)
+endif
+ifneq ($(strip $(CANDIDATE_REF)),)
+CANDIDATE_COMMIT := $(shell "$(GIT)" rev-parse --verify "$(CANDIDATE_REF)^{commit}" 2>/dev/null)
+endif
 
 .PHONY: setup-test-e2e-kind
 setup-test-e2e-kind: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -92,6 +107,30 @@ test-e2e-kind: setup-test-e2e-kind manifests generate fmt vet ## Run the Kind e2
 	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/kind/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e-kind
 
+.PHONY: validate-test-e2e-kind-upgrade-revisions
+validate-test-e2e-kind-upgrade-revisions: ## Resolve and validate manual upgrade/rollback revision inputs.
+	@test -n "$(BASELINE_REF)" || { echo "BASELINE_REF is required."; exit 1; }
+	@test -n "$(CANDIDATE_REF)" || { echo "CANDIDATE_REF is required."; exit 1; }
+	@test -n "$(BASELINE_COMMIT)" || { echo "BASELINE_REF '$(BASELINE_REF)' does not resolve to a commit."; exit 1; }
+	@test -n "$(CANDIDATE_COMMIT)" || { echo "CANDIDATE_REF '$(CANDIDATE_REF)' does not resolve to a commit."; exit 1; }
+	@test "$(BASELINE_COMMIT)" != "$(CANDIDATE_COMMIT)" || { echo "Baseline and candidate resolve to the same commit."; exit 1; }
+	@echo "Baseline:  $(BASELINE_REF) -> $(BASELINE_COMMIT)"
+	@echo "Candidate: $(CANDIDATE_REF) -> $(CANDIDATE_COMMIT)"
+
+.PHONY: test-e2e-kind-upgrade
+test-e2e-kind-upgrade: validate-test-e2e-kind-upgrade-revisions ## Manually qualify a packaged baseline upgrade and compatible rollback on Kind.
+	@UPGRADE_E2E_BASELINE_REF="$(BASELINE_COMMIT)" \
+		UPGRADE_E2E_CANDIDATE_REF="$(CANDIDATE_COMMIT)" \
+		UPGRADE_E2E_KEEP_CLUSTER="$(UPGRADE_E2E_KEEP_CLUSTER)" \
+		KIND_UPGRADE_EXPECTED_VERSION="$(KIND_UPGRADE_VERSION)" \
+		HELM_UPGRADE_EXPECTED_VERSION="$(HELM_UPGRADE_VERSION)" \
+		KIND_UPGRADE_NODE_IMAGE="$(KIND_UPGRADE_NODE_IMAGE)" \
+		KIND_EXPERIMENTAL_PROVIDER="$(KIND_UPGRADE_PROVIDER)" \
+		CONTAINER_TOOL="$(CONTAINER_TOOL)" \
+		KIND="$(KIND)" KIND_CLUSTER="$(KIND_UPGRADE_CLUSTER)" \
+		HELM="$(HELM)" KUBECTL="$(KUBECTL)" GIT="$(GIT)" TAR="$(TAR)" \
+		./test/e2e/kind/upgrade/run.sh
+
 .PHONY: test-e2e-crc
 test-e2e-crc: ## Run the packaged OpenShift/CRC e2e test with an ephemeral operator identity.
 	./test/e2e/openshift/e2e-test.sh
@@ -99,6 +138,11 @@ test-e2e-crc: ## Run the packaged OpenShift/CRC e2e test with an ephemeral opera
 .PHONY: cleanup-test-e2e-kind
 cleanup-test-e2e-kind: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+.PHONY: cleanup-test-e2e-kind-upgrade
+cleanup-test-e2e-kind-upgrade: ## Tear down the Kind cluster used for upgrade/rollback e2e tests.
+	@KIND_EXPERIMENTAL_PROVIDER="$(KIND_UPGRADE_PROVIDER)" \
+		"$(KIND)" delete cluster --name "$(KIND_UPGRADE_CLUSTER)"
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -195,6 +239,7 @@ $(LOCALBIN):
 ## Tool Binaries
 KUBECTL ?= kubectl
 KIND ?= kind
+TAR ?= tar
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
