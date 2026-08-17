@@ -11,7 +11,8 @@ webhook no longer needs Secret access or permission to update its
 MutatingWebhookConfiguration; cert-manager injects the CA bundle instead. The
 Deployment security contexts are value-driven and omit fixed UID/GID values so
 OpenShift `restricted-v2` can assign a namespace-specific identity. The
-upstream image is pinned by multi-platform digest.
+upstream image is pinned by multi-platform digest. The PodDisruptionBudget can
+be disabled so the parent chart can provide a coherent single-replica profile.
 
 To update the dependency, download the new upstream chart, compare every file,
 reapply only these documented deltas, update the image digest and metadata, and

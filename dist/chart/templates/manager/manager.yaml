@@ -81,6 +81,7 @@ spec:
             - --azure-subscription-id={{ required "azure.subscriptionId is required" .Values.azure.subscriptionId }}
             - --azure-resource-group-name={{ required "azure.resourceGroupName is required" .Values.azure.resourceGroupName }}
             - --azure-location={{ required "azure.location is required" .Values.azure.location }}
+            - --azure-scope-anchor-directory=/var/run/azure-workload-identity-operator/startup-scope
             {{- if .Values.telemetry.tracing.enabled }}
             - --telemetry-tracing-enabled
             {{- end }}
@@ -151,6 +152,9 @@ spec:
           securityContext:
             {{- toYaml .Values.manager.securityContext | nindent 12 }}
           volumeMounts:
+            - name: azure-startup-scope
+              mountPath: /var/run/azure-workload-identity-operator/startup-scope
+              readOnly: true
             - name: webhook-certs
               mountPath: /tmp/k8s-webhook-server/serving-certs
               readOnly: true
@@ -158,6 +162,16 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
+        - name: azure-startup-scope
+          configMap:
+            name: azure-workload-identity-operator-startup-config
+            items:
+              - key: subscriptionId
+                path: subscriptionId
+              - key: resourceGroupName
+                path: resourceGroupName
+              - key: location
+                path: location
         - name: webhook-certs
           secret:
             secretName: {{ include "azure-workload-identity-operator.webhookSecretName" . }}

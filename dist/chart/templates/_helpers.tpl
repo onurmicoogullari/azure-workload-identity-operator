@@ -39,22 +39,28 @@ azure-workload-identity-operator-controller-manager
 
 {{- define "azure-workload-identity-operator.validateManagerExtensions" -}}
 {{- $fixedEnv := list "AZURE_TOKEN_CREDENTIALS" "POD_NAME" "POD_UID" "POD_NAMESPACE" "SERVICE_ACCOUNT_NAME" "OPERATOR_VERSION" "AZURE_CLIENT_ID" "AZURE_TENANT_ID" "AZURE_CLIENT_SECRET" -}}
+{{- $fixedVolumes := list "azure-startup-scope" "webhook-certs" -}}
+{{- $webhookCertificateMountPath := "/tmp/k8s-webhook-server/serving-certs" -}}
+{{- $scopeMountPath := "/var/run/azure-workload-identity-operator/startup-scope" -}}
 {{- range .Values.manager.extraEnv -}}
 {{- if has .name $fixedEnv -}}
 {{- fail (printf "manager.extraEnv cannot replace fixed environment variable %q" .name) -}}
 {{- end -}}
 {{- end -}}
 {{- range .Values.manager.extraVolumes -}}
-{{- if eq .name "webhook-certs" -}}
-{{- fail "manager.extraVolumes cannot replace fixed volume \"webhook-certs\"" -}}
+{{- if has .name $fixedVolumes -}}
+{{- fail (printf "manager.extraVolumes cannot replace fixed volume %q" .name) -}}
 {{- end -}}
 {{- end -}}
 {{- range .Values.manager.extraVolumeMounts -}}
-{{- if eq .name "webhook-certs" -}}
-{{- fail "manager.extraVolumeMounts cannot replace fixed volume mount \"webhook-certs\"" -}}
+{{- if has .name $fixedVolumes -}}
+{{- fail (printf "manager.extraVolumeMounts cannot replace fixed volume mount %q" .name) -}}
 {{- end -}}
-{{- if eq .mountPath "/tmp/k8s-webhook-server/serving-certs" -}}
+{{- if eq .mountPath $webhookCertificateMountPath -}}
 {{- fail "manager.extraVolumeMounts cannot replace the fixed webhook certificate mount path" -}}
+{{- end -}}
+{{- if or (eq .mountPath $scopeMountPath) (hasPrefix (printf "%s/" $scopeMountPath) .mountPath) -}}
+{{- fail "manager.extraVolumeMounts cannot overlap the fixed Azure startup scope mount path" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

@@ -1,0 +1,8 @@
+azure:
+  tenantId: 00000000-0000-0000-0000-000000000000
+  subscriptionId: 00000000-0000-0000-0000-000000000000
+  resourceGroupName: rg-platform-workload-identity
+  location: swedencentral
+  credentials:
+    # This Secret is externally managed and must not be stored in Git.
+    existingSecret: azure-workload-identity-operator-azure-credentials

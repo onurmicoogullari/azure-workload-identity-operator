@@ -1,0 +1,11 @@
+# Development and constrained-cluster profile. This removes control-plane and
+# admission redundancy and is not recommended for production.
+manager:
+  replicas: 1
+  podDisruptionBudget:
+    enabled: false
+
+azureWorkloadIdentityWebhook:
+  replicaCount: 1
+  podDisruptionBudget:
+    enabled: false
