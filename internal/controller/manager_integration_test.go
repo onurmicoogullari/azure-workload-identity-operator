@@ -142,13 +142,11 @@ var _ = Describe("Controller manager event settling", Ordered, func() {
 		workloadManager := &countingWorkloadIdentityManager{}
 		Expect((&OIDCIssuerReconciler{
 			Client:                    manager.GetClient(),
-			Scheme:                    manager.GetScheme(),
 			Publisher:                 publisher,
 			OIDCIssuerRefreshInterval: refreshInterval,
 		}).SetupWithManager(manager)).To(Succeed())
 		Expect((&WorkloadIdentityReconciler{
 			Client:          manager.GetClient(),
-			Scheme:          manager.GetScheme(),
 			Manager:         workloadManager,
 			RefreshInterval: refreshInterval,
 		}).SetupWithManager(manager)).To(Succeed())
@@ -222,7 +220,6 @@ var _ = Describe("Controller manager event settling", Ordered, func() {
 		workloadManager := &countingWorkloadIdentityManager{}
 		Expect((&WorkloadIdentityReconciler{
 			Client:          manager.GetClient(),
-			Scheme:          manager.GetScheme(),
 			Manager:         workloadManager,
 			RefreshInterval: refreshInterval,
 		}).SetupWithManager(manager)).To(Succeed())
@@ -281,7 +278,6 @@ var _ = Describe("Controller manager event settling", Ordered, func() {
 		}, nil)
 		Expect((&WorkloadIdentityReconciler{
 			Client:           manager.GetClient(),
-			Scheme:           manager.GetScheme(),
 			Manager:          &countingWorkloadIdentityManager{},
 			RecoveryDetector: detector,
 			RefreshInterval:  refreshInterval,
@@ -440,7 +436,6 @@ var _ = Describe("Controller manager event settling", Ordered, func() {
 		))
 		Expect((&WorkloadIdentityReconciler{
 			Client:          manager.GetClient(),
-			Scheme:          manager.GetScheme(),
 			Manager:         workloadManager,
 			RefreshInterval: refreshInterval,
 		}).SetupWithManager(manager)).To(Succeed())

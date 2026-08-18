@@ -27,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -69,7 +68,6 @@ type ServiceAccountTokenClient interface {
 // OIDCIssuerReconciler reconciles an OIDCIssuer object.
 type OIDCIssuerReconciler struct {
 	client.Client
-	Scheme                        *runtime.Scheme
 	Publisher                     oidc.Publisher
 	OpenShiftServiceAccountIssuer OpenShiftServiceAccountIssuerManager
 	ServiceAccountTokens          ServiceAccountTokenClient

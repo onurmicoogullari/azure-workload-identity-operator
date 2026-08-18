@@ -26,7 +26,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -62,7 +61,6 @@ const (
 type WorkloadIdentityRecoveryReconciler struct {
 	client.Client
 	APIReader client.Reader
-	Scheme    *runtime.Scheme
 	Manager   workloadidentity.RecoveryManager
 	Telemetry *operatortelemetry.Runtime
 }

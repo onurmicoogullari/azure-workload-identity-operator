@@ -79,14 +79,9 @@ func SigningAlgorithmFromPEM(publicKeyPEM []byte) (string, error) {
 }
 
 func PublicKeyMetadataFromPEM(publicKeyPEM []byte) (PublicKeyMetadata, error) {
-	block, _ := pem.Decode(publicKeyPEM)
-	if block == nil {
-		return PublicKeyMetadata{}, fmt.Errorf("public key PEM is invalid")
-	}
-
-	publicKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	publicKey, err := parsePublicKeyPEM(publicKeyPEM)
 	if err != nil {
-		return PublicKeyMetadata{}, fmt.Errorf("parse public key: %w", err)
+		return PublicKeyMetadata{}, err
 	}
 
 	switch key := publicKey.(type) {
@@ -130,22 +125,25 @@ func JWKSFromPEMs(publicKeyPEMs ...[]byte) ([]byte, error) {
 }
 
 func jwkFromPEM(publicKeyPEM []byte) (jwk, error) {
-	block, _ := pem.Decode(publicKeyPEM)
-	if block == nil {
-		return jwk{}, fmt.Errorf("public key PEM is invalid")
-	}
-
-	publicKey, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return jwk{}, fmt.Errorf("parse public key: %w", err)
-	}
-
-	key, err := publicKeyToJWK(publicKey)
+	publicKey, err := parsePublicKeyPEM(publicKeyPEM)
 	if err != nil {
 		return jwk{}, err
 	}
 
-	return key, nil
+	return publicKeyToJWK(publicKey)
+}
+
+func parsePublicKeyPEM(publicKeyPEM []byte) (any, error) {
+	block, _ := pem.Decode(publicKeyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("public key PEM is invalid")
+	}
+
+	publicKey, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse public key: %w", err)
+	}
+	return publicKey, nil
 }
 
 func publicKeyToJWK(publicKey any) (jwk, error) {
