@@ -184,6 +184,8 @@ updating data in an existing Secret is observed by periodic OIDCIssuer refresh
 Treat permission to create or modify `OIDCIssuer` as a cluster-administrator
 capability: such a user can direct this cluster-trusted controller to retrieve
 a Secret. Optional user-facing RBAC helper roles remain disabled by default.
+See [JWKS key-overlap publication](../../docs/permissions.md#jwks-key-overlap-publication)
+for the operator's role during an externally managed signing-key rotation.
 
 ## Namespace, naming, and scheduling
 
@@ -295,8 +297,11 @@ retained resources before making any separate scope migration.
 
 For a permanent, destructive decommission:
 
-1. while the operator is running, delete each custom resource in dependency
-   order and wait for all finalizers and requested Azure cleanup to finish;
+1. while the operator is running, follow the documented
+   [OpenShift service-account issuer handoff](../../docs/permissions.md#openshift-service-account-issuer-handoff)
+   if the operator manages that setting, then delete each custom resource in
+   dependency order and wait for all finalizers and requested Azure cleanup to
+   finish;
 2. verify no `OIDCIssuer`, `WorkloadIdentity`, or
    `WorkloadIdentityRecovery` objects remain;
 3. uninstall the Helm release;
