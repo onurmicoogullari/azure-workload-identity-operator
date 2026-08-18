@@ -82,15 +82,121 @@ user-facing RBAC helpers are disabled by default.
 
 The operator reads the configured active and retiring signing key Secrets during reconciliation. To avoid broad cluster-wide Secret watch permissions, signing key changes are picked up by periodic OIDCIssuer reconciliation rather than an immediate Secret watch. The same refresh also reconciles Azure storage resources and republishes OIDC documents. The default interval is 5 minutes and can be changed with `--oidc-issuer-refresh-interval`.
 
-To rotate safely:
+### JWKS Key-Overlap Publication
 
-1. Add the old signing key to `spec.signingKey.retiringSecretRef`.
-2. Change `spec.signingKey.secretRef` to the new active signing key.
-3. Wait until the operator publishes both keys and `.status.signingKeys` shows the old key as `Retiring`.
-4. Keep the retiring key configured for at least the longest possible service account token lifetime, plus enough time for one successful reconciliation.
-5. Remove the retiring key reference and Secret after tokens signed by that key can no longer be valid.
+The operator does not rotate the cluster's service-account token signer. It
+publishes active and retiring public keys so tokens issued before and after an
+externally managed signer rotation remain verifiable during their validity
+overlap. The `Active` and `Retiring` states describe publication intent; they
+do not configure or detect which private key the cluster currently uses.
 
-The operator does not automatically decide when a retiring key is safe to remove. That decision depends on the cluster token lifetime and any external consumers that may cache tokens or JWKS.
+To publish overlapping keys during an externally managed rotation:
+
+1. Follow the cluster platform's supported rotation procedure until the new
+   public key is available in a Secret. Coordinate the timing with that
+   procedure because signer rollout behavior is platform-specific. For the
+   production acceptance target, see
+   [Rotating Azure OIDC bound service account signer keys](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/postinstallation_configuration/changing-cloud-credentials-configuration#rotating-azure-oidc-bound-service-account-signer-keys_rotating-cloud-provider-service-keys).
+2. In one `OIDCIssuer` update, set `spec.signingKey.retiringSecretRef` to
+   the current active key and change `spec.signingKey.secretRef` to the new
+   key. The active and retiring references cannot be identical.
+3. Wait until the published JWKS contains both keys and
+   `.status.signingKeys` shows the old key as `Retiring` and the new key as
+   `Active`.
+4. Complete the platform's signer transition and verify newly minted service
+   account tokens use the new active key ID.
+5. Keep the retiring key configured for at least the longest possible service
+   account token lifetime measured from the last time the old key could have
+   signed a token, plus any required JWKS cache and reconciliation allowance.
+6. Remove the retiring key reference and Secret after tokens signed by that
+   key can no longer be valid.
+
+The operator does not automatically decide when a retiring key is safe to
+remove. That decision belongs to the platform's rotation procedure and depends
+on cluster token lifetimes and external consumers that may cache tokens or
+JWKS.
+
+## OpenShift Service-Account Issuer Handoff
+
+When `spec.openShift.updateServiceAccountIssuer` is `true`, the operator
+reconciles `Authentication/cluster.spec.serviceAccountIssuer` to the published
+OIDC issuer URL. A manual change to `Authentication/cluster` can therefore be
+reverted immediately by its watch or later by periodic reconciliation.
+
+> [!NOTE]
+> **OpenShift-specific commands:** This handoff applies only to OpenShift, so
+> the examples use `oc`. `kubectl` can perform the equivalent API operations
+> when it is configured for the OpenShift cluster.
+
+> [!IMPORTANT]
+> If GitOps or another declarative reconciler manages the `OIDCIssuer`, first
+> set `spec.openShift.updateServiceAccountIssuer: false` in its source of truth
+> and wait for synchronization, or suspend that reconciler. The field must
+> remain `false` throughout the handoff.
+
+Before manually restoring the OpenShift service-account issuer, disable this
+management on the `OIDCIssuer` and wait until the controller has observed that
+exact generation. Do not reverse these steps.
+
+1. Record the intended restoration value. The operator stores the value it
+   replaced in `.status.previousServiceAccountIssuer`; a present empty string
+   is a valid previous value. If the field was not captured, determine the
+   intended cluster value before proceeding rather than assuming one.
+
+   ```bash
+   oc get oidcissuer default -o yaml
+   ```
+
+2. Disable operator management, capture the resulting generation, and wait for
+   that generation to be observed:
+
+   ```bash
+   generation="$(
+     oc patch oidcissuer default --type=merge \
+       -p '{"spec":{"openShift":{"updateServiceAccountIssuer":false}}}' \
+       -o jsonpath='{.metadata.generation}'
+   )"
+   oc wait oidcissuer/default \
+     --for=jsonpath='{.status.observedGeneration}'="$generation" \
+     --timeout=10m
+   ```
+
+3. Only after the wait succeeds, verify that management is still disabled and
+   neither the desired nor observed generation has changed. Then restore
+   `Authentication/cluster`. Set `previous_issuer` to the value recorded in
+   step 1; use `previous_issuer=''` when the captured previous value is
+   explicitly empty:
+
+   ```bash
+   previous_issuer='<captured-value>'
+   state="$(
+     oc get oidcissuer default \
+       -o jsonpath='{.spec.openShift.updateServiceAccountIssuer}{" "}{.metadata.generation}{" "}{.status.observedGeneration}'
+   )"
+   if [[ "$state" != "false $generation $generation" ]]; then
+     printf 'OIDCIssuer changed; stop and repeat the disable-and-wait step\n' >&2
+     false
+   else
+     oc patch authentication.config.openshift.io cluster --type=merge \
+       -p "{\"spec\":{\"serviceAccountIssuer\":\"${previous_issuer}\"}}"
+   fi
+   ```
+
+4. Wait for the OpenShift API server rollout and confirm the
+   `kube-apiserver`, `authentication`, and `openshift-apiserver` ClusterOperators
+   are `Available=True`, `Progressing=False`, and `Degraded=False`. Then verify
+   `Authentication/cluster.spec.serviceAccountIssuer` still has the restored
+   value before deleting or decommissioning the `OIDCIssuer`.
+
+   ```bash
+   oc get clusteroperator kube-apiserver authentication openshift-apiserver
+   oc get authentication.config.openshift.io cluster \
+     -o jsonpath='{.spec.serviceAccountIssuer}{"\n"}'
+   ```
+
+Changing the service-account issuer can temporarily interrupt existing `oc`
+sessions. If authentication fails during the rollout, start a new shell and
+log in again before performing the health and value checks.
 
 ## Deletion Behavior
 

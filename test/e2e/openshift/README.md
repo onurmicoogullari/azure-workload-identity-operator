@@ -178,10 +178,10 @@ The numbered script flow is:
    documents.
 8. Wait for the issuer to become Ready and publish discovery/JWKS documents.
 9. Verify capture of the previous OpenShift service-account issuer.
-10. Verify active and retiring signing keys are published.
+10. Verify active and retiring JWKS keys are published for key overlap.
 11. Wait for OpenShift to roll and mint tokens with the published issuer.
-12. Replace only the retiring key Secret and verify packaged-controller periodic
-    refresh republishes it.
+12. Replace only the retiring public-key Secret and verify packaged-controller
+    periodic refresh republishes it.
 13. Create a real Azure Key Vault.
 14. Create `WorkloadIdentity`, validate immutable naming and ownership tags,
     scale the packaged operator down/up to test deterministic ServiceAccount
