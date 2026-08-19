@@ -125,7 +125,6 @@ func TestWorkloadIdentityRecoveryControllerCompletesForwardRecovery(t *testing.T
 	reconciler := &WorkloadIdentityRecoveryReconciler{
 		Client:    kubeClient,
 		APIReader: kubeClient,
-		Scheme:    scheme,
 		Manager:   manager,
 	}
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Name: recovery.Name}}

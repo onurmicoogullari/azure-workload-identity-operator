@@ -181,7 +181,6 @@ var _ = Describe("OIDCIssuer Controller", func() {
 
 			controllerReconciler := &OIDCIssuerReconciler{
 				Client:                    k8sClient,
-				Scheme:                    k8sClient.Scheme(),
 				Publisher:                 publisher,
 				OIDCIssuerRefreshInterval: time.Minute,
 			}
@@ -585,7 +584,6 @@ func newOIDCIssuerReconciler(publisher oidc.Publisher, openShiftServiceAccountIs
 func newOIDCIssuerReconcilerWithTokenClient(publisher oidc.Publisher, openShiftServiceAccountIssuer OpenShiftServiceAccountIssuerManager, serviceAccountTokens ServiceAccountTokenClient) *OIDCIssuerReconciler {
 	return &OIDCIssuerReconciler{
 		Client:                        k8sClient,
-		Scheme:                        k8sClient.Scheme(),
 		Publisher:                     publisher,
 		OpenShiftServiceAccountIssuer: openShiftServiceAccountIssuer,
 		ServiceAccountTokens:          serviceAccountTokens,

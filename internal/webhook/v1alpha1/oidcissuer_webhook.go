@@ -64,8 +64,7 @@ type OIDCIssuerValidator struct {
 func (v *OIDCIssuerValidator) ValidateCreate(ctx context.Context, obj *workloadidentityv1alpha1.OIDCIssuer) (_ admission.Warnings, err error) {
 	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "OIDCIssuer", obj, err) }()
 	logf.FromContext(ctx).WithName("oidcissuer-resource").Info("Validation for OIDCIssuer upon creation", "name", obj.GetName())
-	allErrs := validateOIDCIssuerName(obj)
-	allErrs = append(allErrs, validateOIDCIssuerSigningKey(obj.Spec.SigningKey)...)
+	allErrs := validateOIDCIssuer(obj)
 	if len(allErrs) > 0 {
 		return nil, invalidOIDCIssuer(obj.GetName(), allErrs)
 	}
@@ -76,8 +75,7 @@ func (v *OIDCIssuerValidator) ValidateCreate(ctx context.Context, obj *workloadi
 func (v *OIDCIssuerValidator) ValidateUpdate(ctx context.Context, oldObj, newObj *workloadidentityv1alpha1.OIDCIssuer) (_ admission.Warnings, err error) {
 	defer func() { operatortelemetry.RecordAdmissionOutcome(ctx, "OIDCIssuer", newObj, err) }()
 	logf.FromContext(ctx).WithName("oidcissuer-resource").Info("Validation for OIDCIssuer upon update", "name", newObj.GetName())
-	allErrs := validateOIDCIssuerName(newObj)
-	allErrs = append(allErrs, validateOIDCIssuerSigningKey(newObj.Spec.SigningKey)...)
+	allErrs := validateOIDCIssuer(newObj)
 	if !reflect.DeepEqual(oldObj.Spec.Azure, newObj.Spec.Azure) {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "azure"), "field is immutable"))
 	}
@@ -147,6 +145,11 @@ func validateOIDCIssuerName(obj *workloadidentityv1alpha1.OIDCIssuer) field.Erro
 	return field.ErrorList{
 		field.Invalid(field.NewPath("metadata", "name"), obj.GetName(), `must be "default"`),
 	}
+}
+
+func validateOIDCIssuer(obj *workloadidentityv1alpha1.OIDCIssuer) field.ErrorList {
+	allErrs := validateOIDCIssuerName(obj)
+	return append(allErrs, validateOIDCIssuerSigningKey(obj.Spec.SigningKey)...)
 }
 
 func validateOIDCIssuerSigningKey(signingKey workloadidentityv1alpha1.SigningKeySource) field.ErrorList {

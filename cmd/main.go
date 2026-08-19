@@ -29,6 +29,7 @@ import (
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	aztracing "github.com/Azure/azure-sdk-for-go/sdk/azcore/tracing"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/go-logr/logr"
 	configv1 "github.com/openshift/api/config/v1"
@@ -49,6 +50,7 @@ import (
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/azure"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/controller"
 	kubernetesclient "github.com/onurmicoogullari/azure-workload-identity-operator/internal/kubernetes"
+	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/oidcissuer"
 	"github.com/onurmicoogullari/azure-workload-identity-operator/internal/openshift"
 	operatortelemetry "github.com/onurmicoogullari/azure-workload-identity-operator/internal/telemetry"
 	webhookv1alpha1 "github.com/onurmicoogullari/azure-workload-identity-operator/internal/webhook/v1alpha1"
@@ -89,6 +91,27 @@ type azureScopeFlagValues struct {
 	subscriptionID    string
 	resourceGroupName string
 	location          string
+}
+
+type certificateFlagValues struct {
+	directory string
+	name      string
+	key       string
+}
+
+type operatorFlagValues struct {
+	metricsAddress                  string
+	healthProbeAddress              string
+	enableLeaderElection            bool
+	secureMetrics                   bool
+	enableHTTP2                     bool
+	telemetryTracingEnabled         bool
+	oidcIssuerRefreshInterval       time.Duration
+	workloadIdentityRefreshInterval time.Duration
+	azureScope                      azureScopeFlagValues
+	azureScopeAnchorDirectory       string
+	webhookCertificate              certificateFlagValues
+	metricsCertificate              certificateFlagValues
 }
 
 type healthCheckRegistrar interface {
@@ -132,56 +155,72 @@ func registerAzureScopeFlags(flags *flag.FlagSet, values *azureScopeFlagValues) 
 	)
 }
 
-// nolint:gocyclo
-func main() {
-	var metricsAddr string
-	var metricsCertPath, metricsCertName, metricsCertKey string
-	var webhookCertPath, webhookCertName, webhookCertKey string
-	var enableLeaderElection bool
-	var probeAddr string
-	var secureMetrics bool
-	var enableHTTP2 bool
-	var oidcIssuerRefreshInterval time.Duration
-	var workloadIdentityRefreshInterval time.Duration
-	var telemetryTracingEnabled bool
-	var azureScopeFlags azureScopeFlagValues
-	var azureScopeAnchorDirectory string
-	var tlsOpts []func(*tls.Config)
-	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
+func registerOperatorFlags(flags *flag.FlagSet, values *operatorFlagValues) {
+	flags.StringVar(&values.metricsAddress, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+	flags.StringVar(
+		&values.healthProbeAddress,
+		"health-probe-bind-address",
+		":8081",
+		"The address the probe endpoint binds to.",
+	)
+	flags.BoolVar(&values.enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&secureMetrics, "metrics-secure", true,
+	flags.BoolVar(&values.secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
-	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
-	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
-	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
-	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
+	flags.StringVar(
+		&values.webhookCertificate.directory,
+		"webhook-cert-path",
+		"",
+		"The directory that contains the webhook certificate.",
+	)
+	flags.StringVar(
+		&values.webhookCertificate.name,
+		"webhook-cert-name",
+		"tls.crt",
+		"The name of the webhook certificate file.",
+	)
+	flags.StringVar(&values.webhookCertificate.key, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
+	flags.StringVar(&values.metricsCertificate.directory, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
-	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
-	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
-	flag.BoolVar(&enableHTTP2, "enable-http2", false,
+	flags.StringVar(
+		&values.metricsCertificate.name,
+		"metrics-cert-name",
+		"tls.crt",
+		"The name of the metrics server certificate file.",
+	)
+	flags.StringVar(
+		&values.metricsCertificate.key,
+		"metrics-cert-key",
+		"tls.key",
+		"The name of the metrics server key file.",
+	)
+	flags.BoolVar(&values.enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.BoolVar(&telemetryTracingEnabled, "telemetry-tracing-enabled", false,
+	flags.BoolVar(&values.telemetryTracingEnabled, "telemetry-tracing-enabled", false,
 		"Enable in-process OpenTelemetry tracing configured through standard OTEL environment variables.")
-	registerOIDCIssuerRefreshIntervalFlags(flag.CommandLine, &oidcIssuerRefreshInterval)
-	registerAzureScopeFlags(flag.CommandLine, &azureScopeFlags)
-	flag.StringVar(
-		&azureScopeAnchorDirectory,
+	registerOIDCIssuerRefreshIntervalFlags(flags, &values.oidcIssuerRefreshInterval)
+	registerAzureScopeFlags(flags, &values.azureScope)
+	flags.StringVar(
+		&values.azureScopeAnchorDirectory,
 		"azure-scope-anchor-directory",
 		"",
 		"Directory containing the retained Azure startup scope. "+
 			"When set, startup fails unless it matches the configured scope.",
 	)
-	flag.DurationVar(
-		&workloadIdentityRefreshInterval,
+	flags.DurationVar(
+		&values.workloadIdentityRefreshInterval,
 		"workload-identity-refresh-interval",
 		controller.DefaultWorkloadIdentityRefreshInterval,
 		"Base interval for successful WorkloadIdentity reconciles to revalidate Azure resources and repair "+
 			"ServiceAccount drift; each resource receives up to 10% stable jitter.",
 	)
+}
+
+func main() {
+	var config operatorFlagValues
+	registerOperatorFlags(flag.CommandLine, &config)
 	opts := zap.Options{
 		Development: false,
 	}
@@ -190,106 +229,29 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	telemetryContext := logr.NewContext(context.Background(), setupLog.WithName("telemetry"))
-	telemetryRuntime, telemetryErr := operatortelemetry.New(telemetryContext, operatortelemetry.Config{
-		Enabled:        telemetryTracingEnabled,
-		ServiceVersion: operatorVersion(),
-		PodName:        os.Getenv(podNameEnvVar),
-		PodUID:         os.Getenv(podUIDEnvVar),
-		PodNamespace:   os.Getenv(podNamespaceEnvVar),
-	})
-	if telemetryErr != nil {
-		setupLog.Error(telemetryErr, "OpenTelemetry tracing is disabled because configuration is invalid")
-	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := telemetryRuntime.Shutdown(shutdownCtx); err != nil {
-			setupLog.Error(err, "Could not flush OpenTelemetry spans during shutdown")
-		}
-	}()
+	telemetryRuntime := newTelemetryRuntime(config.telemetryTracingEnabled)
+	defer shutdownTelemetry(telemetryRuntime)
 
 	azureScope, err := azure.NewScope(
-		azureScopeFlags.subscriptionID,
-		azureScopeFlags.resourceGroupName,
-		azureScopeFlags.location,
+		config.azureScope.subscriptionID,
+		config.azureScope.resourceGroupName,
+		config.azureScope.location,
 	)
 	if err != nil {
 		setupLog.Error(err, "Invalid Azure scope configuration")
 		os.Exit(1)
 	}
-	if azureScopeAnchorDirectory != "" {
-		if err := azure.ValidateScopeAnchor(azureScope, azureScopeAnchorDirectory); err != nil {
+	if config.azureScopeAnchorDirectory != "" {
+		if err := azure.ValidateScopeAnchor(azureScope, config.azureScopeAnchorDirectory); err != nil {
 			setupLog.Error(err, "Azure startup scope validation failed")
 			os.Exit(1)
 		}
 	}
 
-	// if the enable-http2 flag is false (the default), http/2 should be disabled
-	// due to its vulnerabilities. More specifically, disabling http/2 will
-	// prevent from being vulnerable to the HTTP/2 Stream Cancellation and
-	// Rapid Reset CVEs. For more information see:
-	// - https://github.com/advisories/GHSA-qppj-fm5r-hxr3
-	// - https://github.com/advisories/GHSA-4374-p667-p6c8
-	disableHTTP2 := func(c *tls.Config) {
-		setupLog.Info("Disabling HTTP/2")
-		c.NextProtos = []string{"http/1.1"}
-	}
-
-	if !enableHTTP2 {
-		tlsOpts = append(tlsOpts, disableHTTP2)
-	}
-
-	webhookServerOptions := webhook.Options{
-		Port:    webhookServerPort,
-		TLSOpts: tlsOpts,
-	}
-
-	if len(webhookCertPath) > 0 {
-		setupLog.Info("Initializing webhook certificate watcher using provided certificates",
-			"webhook-cert-path", webhookCertPath, "webhook-cert-name", webhookCertName, "webhook-cert-key", webhookCertKey)
-
-		webhookServerOptions.CertDir = webhookCertPath
-		webhookServerOptions.CertName = webhookCertName
-		webhookServerOptions.KeyName = webhookCertKey
-	}
-
+	tlsOpts := tlsOptions(config.enableHTTP2)
+	webhookServerOptions := newWebhookServerOptions(config.webhookCertificate, tlsOpts)
 	webhookServer := telemetryRuntime.WrapWebhookServer(webhook.NewServer(webhookServerOptions))
-
-	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
-	// More info:
-	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/metrics/server
-	// - https://book.kubebuilder.io/reference/metrics.html
-	metricsServerOptions := metricsserver.Options{
-		BindAddress:   metricsAddr,
-		SecureServing: secureMetrics,
-		TLSOpts:       tlsOpts,
-	}
-
-	if secureMetrics {
-		// FilterProvider is used to protect the metrics endpoint with authn/authz.
-		// These configurations ensure that only authorized users and service accounts
-		// can access the metrics endpoint. The RBAC are configured in 'config/rbac/kustomization.yaml'. More info:
-		// https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/metrics/filters#WithAuthenticationAndAuthorization
-		metricsServerOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
-	}
-
-	// If the certificate is not specified, controller-runtime will automatically
-	// generate self-signed certificates for the metrics server. While convenient for development and testing,
-	// this setup is not recommended for production.
-	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
-	if len(metricsCertPath) > 0 {
-		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
-			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
-
-		metricsServerOptions.CertDir = metricsCertPath
-		metricsServerOptions.CertName = metricsCertName
-		metricsServerOptions.KeyName = metricsCertKey
-	}
+	metricsServerOptions := newMetricsServerOptions(config, tlsOpts)
 
 	restConfig := ctrl.GetConfigOrDie()
 	telemetryRuntime.WrapRESTConfig(restConfig)
@@ -297,8 +259,8 @@ func main() {
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
+		HealthProbeBindAddress: config.healthProbeAddress,
+		LeaderElection:         config.enableLeaderElection,
 		LeaderElectionID:       "052b777d.micosolutions.se",
 		// The process exits as soon as the manager stops, so releasing the lease on
 		// shutdown is safe and avoids waiting for the lease to expire during rollouts.
@@ -331,81 +293,28 @@ func main() {
 		os.Exit(1)
 	}
 	serviceAccountTokenReader := newServiceAccountTokenClient(mgr.GetClient())
-	var serviceAccountTokens controller.ServiceAccountTokenClient
-	if serviceAccountTokenReader != nil {
-		serviceAccountTokens = serviceAccountTokenReader
-	}
-
-	if err := (&controller.OIDCIssuerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Publisher: &azure.BlobOIDCDocumentPublisher{
-			Reader:          mgr.GetAPIReader(),
-			Credential:      azureCredential,
-			Scope:           azureScope,
-			TracingProvider: azureTracingProvider,
-		},
-		OpenShiftServiceAccountIssuer: openShiftServiceAccountIssuer,
-		ServiceAccountTokens:          serviceAccountTokens,
-		OIDCIssuerRefreshInterval:     oidcIssuerRefreshInterval,
-		Telemetry:                     telemetryRuntime,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "oidcissuer")
-		os.Exit(1)
-	}
-	workloadIdentityManager := &azure.WorkloadIdentityManager{
-		Credential:      azureCredential,
-		Scope:           azureScope,
-		TracingProvider: azureTracingProvider,
-	}
-	if err := (&controller.WorkloadIdentityReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		RefreshInterval:  workloadIdentityRefreshInterval,
-		Recorder:         mgr.GetEventRecorder("workloadidentity-controller"),
-		Manager:          workloadIdentityManager,
-		RecoveryDetector: workloadIdentityManager,
-		Telemetry:        telemetryRuntime,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentity")
-		os.Exit(1)
-	}
-	if err := (&controller.WorkloadIdentityRecoveryReconciler{
-		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
-		Scheme:    mgr.GetScheme(),
-		Manager: &azure.WorkloadIdentityRecoveryManager{
-			Credential:      azureCredential,
-			Scope:           azureScope,
-			TracingProvider: azureTracingProvider,
-		},
-		Telemetry: telemetryRuntime,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "workloadidentityrecovery")
+	serviceAccountTokens := serviceAccountTokenGuard(serviceAccountTokenReader)
+	if name, err := registerControllers(
+		mgr,
+		azureCredential,
+		azureScope,
+		azureTracingProvider,
+		openShiftServiceAccountIssuer,
+		serviceAccountTokens,
+		config,
+		telemetryRuntime,
+	); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", name)
 		os.Exit(1)
 	}
 	webhooksEnabled := os.Getenv(enableWebhooksEnvVar) != "false"
 	if webhooksEnabled {
-		var err error
-		if serviceAccountTokenReader == nil {
-			err = webhookv1alpha1.SetupOIDCIssuerWebhookWithManager(mgr, webhookOpenShiftServiceAccountIssuer, nil)
-		} else {
-			err = webhookv1alpha1.SetupOIDCIssuerWebhookWithManager(
-				mgr,
-				webhookOpenShiftServiceAccountIssuer,
-				serviceAccountTokenReader,
-			)
-		}
-		if err != nil {
-			setupLog.Error(err, "Failed to create webhook", "webhook", "OIDCIssuer")
-			os.Exit(1)
-		}
-		if err := webhookv1alpha1.SetupWorkloadIdentityWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "Failed to create webhook", "webhook", "WorkloadIdentity")
-			os.Exit(1)
-		}
-		if err := webhookv1alpha1.SetupWorkloadIdentityRecoveryWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "Failed to create webhook", "webhook", "WorkloadIdentityRecovery")
+		if name, err := registerWebhooks(
+			mgr,
+			webhookOpenShiftServiceAccountIssuer,
+			serviceAccountTokens,
+		); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", name)
 			os.Exit(1)
 		}
 	}
@@ -425,6 +334,174 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+func newTelemetryRuntime(enabled bool) *operatortelemetry.Runtime {
+	telemetryContext := logr.NewContext(context.Background(), setupLog.WithName("telemetry"))
+	telemetryRuntime, err := operatortelemetry.New(telemetryContext, operatortelemetry.Config{
+		Enabled:        enabled,
+		ServiceVersion: operatorVersion(),
+		PodName:        os.Getenv(podNameEnvVar),
+		PodUID:         os.Getenv(podUIDEnvVar),
+		PodNamespace:   os.Getenv(podNamespaceEnvVar),
+	})
+	if err != nil {
+		setupLog.Error(err, "OpenTelemetry tracing is disabled because configuration is invalid")
+	}
+	return telemetryRuntime
+}
+
+func shutdownTelemetry(telemetryRuntime *operatortelemetry.Runtime) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := telemetryRuntime.Shutdown(ctx); err != nil {
+		setupLog.Error(err, "Could not flush OpenTelemetry spans during shutdown")
+	}
+}
+
+// Disabling HTTP/2 avoids the Stream Cancellation and Rapid Reset attack
+// classes while the operator does not require HTTP/2.
+func tlsOptions(enableHTTP2 bool) []func(*tls.Config) {
+	if enableHTTP2 {
+		return nil
+	}
+	return []func(*tls.Config){disableHTTP2}
+}
+
+func disableHTTP2(config *tls.Config) {
+	setupLog.Info("Disabling HTTP/2")
+	config.NextProtos = []string{"http/1.1"}
+}
+
+func newWebhookServerOptions(
+	certificate certificateFlagValues,
+	tlsOpts []func(*tls.Config),
+) webhook.Options {
+	options := webhook.Options{Port: webhookServerPort, TLSOpts: tlsOpts}
+	if certificate.directory == "" {
+		return options
+	}
+	setupLog.Info(
+		"Initializing webhook certificate watcher using provided certificates",
+		"webhook-cert-path", certificate.directory,
+		"webhook-cert-name", certificate.name,
+		"webhook-cert-key", certificate.key,
+	)
+	options.CertDir = certificate.directory
+	options.CertName = certificate.name
+	options.KeyName = certificate.key
+	return options
+}
+
+func newMetricsServerOptions(
+	config operatorFlagValues,
+	tlsOpts []func(*tls.Config),
+) metricsserver.Options {
+	options := metricsserver.Options{
+		BindAddress:   config.metricsAddress,
+		SecureServing: config.secureMetrics,
+		TLSOpts:       tlsOpts,
+	}
+	if config.secureMetrics {
+		options.FilterProvider = filters.WithAuthenticationAndAuthorization
+	}
+	certificate := config.metricsCertificate
+	if certificate.directory == "" {
+		return options
+	}
+	setupLog.Info(
+		"Initializing metrics certificate watcher using provided certificates",
+		"metrics-cert-path", certificate.directory,
+		"metrics-cert-name", certificate.name,
+		"metrics-cert-key", certificate.key,
+	)
+	options.CertDir = certificate.directory
+	options.CertName = certificate.name
+	options.KeyName = certificate.key
+	return options
+}
+
+func serviceAccountTokenGuard(
+	reader *kubernetesclient.ServiceAccountTokenClient,
+) controller.ServiceAccountTokenClient {
+	if reader == nil {
+		return nil
+	}
+	return reader
+}
+
+func registerControllers(
+	mgr ctrl.Manager,
+	credential azcore.TokenCredential,
+	scope azure.Scope,
+	tracingProvider aztracing.Provider,
+	openShiftServiceAccountIssuer controller.OpenShiftServiceAccountIssuerManager,
+	serviceAccountTokens controller.ServiceAccountTokenClient,
+	config operatorFlagValues,
+	telemetryRuntime *operatortelemetry.Runtime,
+) (string, error) {
+	if err := (&controller.OIDCIssuerReconciler{
+		Client: mgr.GetClient(),
+		Publisher: &azure.BlobOIDCDocumentPublisher{
+			Reader:          mgr.GetAPIReader(),
+			Credential:      credential,
+			Scope:           scope,
+			TracingProvider: tracingProvider,
+		},
+		OpenShiftServiceAccountIssuer: openShiftServiceAccountIssuer,
+		ServiceAccountTokens:          serviceAccountTokens,
+		OIDCIssuerRefreshInterval:     config.oidcIssuerRefreshInterval,
+		Telemetry:                     telemetryRuntime,
+	}).SetupWithManager(mgr); err != nil {
+		return "oidcissuer", err
+	}
+
+	workloadIdentityManager := &azure.WorkloadIdentityManager{
+		Credential:      credential,
+		Scope:           scope,
+		TracingProvider: tracingProvider,
+	}
+	if err := (&controller.WorkloadIdentityReconciler{
+		Client:           mgr.GetClient(),
+		RefreshInterval:  config.workloadIdentityRefreshInterval,
+		Recorder:         mgr.GetEventRecorder("workloadidentity-controller"),
+		Manager:          workloadIdentityManager,
+		RecoveryDetector: workloadIdentityManager,
+		Telemetry:        telemetryRuntime,
+	}).SetupWithManager(mgr); err != nil {
+		return "workloadidentity", err
+	}
+
+	err := (&controller.WorkloadIdentityRecoveryReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Manager: &azure.WorkloadIdentityRecoveryManager{
+			Credential:      credential,
+			Scope:           scope,
+			TracingProvider: tracingProvider,
+		},
+		Telemetry: telemetryRuntime,
+	}).SetupWithManager(mgr)
+	return "workloadidentityrecovery", err
+}
+
+func registerWebhooks(
+	mgr ctrl.Manager,
+	openShiftServiceAccountIssuer oidcissuer.OpenShiftServiceAccountIssuerReader,
+	serviceAccountTokens oidcissuer.ServiceAccountTokenIssuerReader,
+) (string, error) {
+	if err := webhookv1alpha1.SetupOIDCIssuerWebhookWithManager(
+		mgr,
+		openShiftServiceAccountIssuer,
+		serviceAccountTokens,
+	); err != nil {
+		return "OIDCIssuer", err
+	}
+	if err := webhookv1alpha1.SetupWorkloadIdentityWebhookWithManager(mgr); err != nil {
+		return "WorkloadIdentity", err
+	}
+	err := webhookv1alpha1.SetupWorkloadIdentityRecoveryWebhookWithManager(mgr)
+	return "WorkloadIdentityRecovery", err
 }
 
 func operatorVersion() string {

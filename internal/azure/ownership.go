@@ -2,9 +2,9 @@ package azure
 
 import (
 	"errors"
-	"fmt"
 	"maps"
 	"net/http"
+	"strconv"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
@@ -23,7 +23,7 @@ func operatorOwnershipTags(uidTagKey, uid string, createdByOperator bool) map[st
 	return map[string]*string{
 		managedByTag:         to.Ptr(operatorName),
 		uidTagKey:            to.Ptr(uid),
-		createdByOperatorTag: to.Ptr(fmt.Sprintf("%t", createdByOperator)),
+		createdByOperatorTag: to.Ptr(strconv.FormatBool(createdByOperator)),
 		operatorAPIGroupTag:  to.Ptr(operatorAPIGroupValue),
 	}
 }

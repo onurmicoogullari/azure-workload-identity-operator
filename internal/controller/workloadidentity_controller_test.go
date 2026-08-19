@@ -186,7 +186,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 				}},
 			}}
 
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(jitteredWorkloadIdentityRefreshInterval(DefaultWorkloadIdentityRefreshInterval, string(identity.UID))))
@@ -227,7 +227,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 					}})).To(Succeed())
 				},
 			}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -258,7 +258,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 					Expect(k8sClient.Delete(ctx, inspectedServiceAccount)).To(Succeed())
 				},
 			}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -281,7 +281,6 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
 			reconciler := &WorkloadIdentityReconciler{
 				Client:          k8sClient,
-				Scheme:          k8sClient.Scheme(),
 				Manager:         manager,
 				RefreshInterval: time.Minute,
 			}
@@ -296,7 +295,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 			serviceAccountBefore := &corev1.ServiceAccount{}
@@ -328,7 +327,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -371,7 +370,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -411,7 +410,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -454,7 +453,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -499,7 +498,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			}})).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -524,7 +523,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			}})).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -550,7 +549,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			}})).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -589,7 +588,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			}})).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).To(MatchError(ContainSubstring("already managed by another WorkloadIdentity")))
 			Expect(manager.ensures).To(Equal(0))
@@ -621,7 +620,6 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			}}
 			reconciler := &WorkloadIdentityReconciler{
 				Client:           k8sClient,
-				Scheme:           k8sClient.Scheme(),
 				Manager:          manager,
 				RecoveryDetector: detector,
 			}
@@ -666,7 +664,6 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			)}
 			reconciler := &WorkloadIdentityReconciler{
 				Client:           k8sClient,
-				Scheme:           k8sClient.Scheme(),
 				Manager:          manager,
 				RecoveryDetector: detector,
 			}
@@ -751,7 +748,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			}})).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{managed: workloadidentity.ManagedIdentity{ClientID: testClientID}}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).To(MatchError(ContainSubstring("already annotated for Azure client ID")))
 			Expect(manager.ensures).To(Equal(0))
@@ -780,7 +777,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 					types.UID("earlier-workload-identity-uid"),
 				),
 			}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(reconciler.refreshInterval(identity)))
@@ -812,7 +809,6 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			)}
 			reconciler := &WorkloadIdentityReconciler{
 				Client:  k8sClient,
-				Scheme:  k8sClient.Scheme(),
 				Manager: manager,
 			}
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
@@ -840,7 +836,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).NotTo(BeZero())
@@ -886,7 +882,6 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 				}
 				reconciler := &WorkloadIdentityReconciler{
 					Client:  k8sClient,
-					Scheme:  k8sClient.Scheme(),
 					Manager: manager,
 				}
 
@@ -976,7 +971,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			otherIdentity := validWorkloadIdentity(otherIdentityKey.Name, otherIdentityKey.Namespace)
 			Expect(k8sClient.Create(ctx, otherIdentity)).To(Succeed())
 
-			reconciler := &WorkloadIdentityReconciler{Client: indexedWorkloadIdentityClient(identity, otherIdentity), Scheme: k8sClient.Scheme()}
+			reconciler := &WorkloadIdentityReconciler{Client: indexedWorkloadIdentityClient(identity, otherIdentity)}
 			requests := reconciler.workloadIdentitiesForOIDCIssuer(ctx, &workloadidentityv1alpha1.OIDCIssuer{ObjectMeta: metav1.ObjectMeta{Name: issuerKey.Name}})
 
 			Expect(requests).To(ConsistOf(reconcile.Request{NamespacedName: identityKey}, reconcile.Request{NamespacedName: otherIdentityKey}))
@@ -990,7 +985,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			otherIdentity.Spec.ServiceAccount.Name = testOtherServiceAccountName
 			Expect(k8sClient.Create(ctx, otherIdentity)).To(Succeed())
 
-			reconciler := &WorkloadIdentityReconciler{Client: indexedWorkloadIdentityClient(identity), Scheme: k8sClient.Scheme()}
+			reconciler := &WorkloadIdentityReconciler{Client: indexedWorkloadIdentityClient(identity)}
 			requests := reconciler.workloadIdentitiesForServiceAccount(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 				Name:      serviceAccountKey.Name,
 				Namespace: serviceAccountKey.Namespace,
@@ -1005,7 +1000,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 			Expect(k8sClient.Get(ctx, identityKey, identity)).To(Succeed())
 
-			reconciler := &WorkloadIdentityReconciler{Client: indexedWorkloadIdentityClient(identity), Scheme: k8sClient.Scheme()}
+			reconciler := &WorkloadIdentityReconciler{Client: indexedWorkloadIdentityClient(identity)}
 			requests := reconciler.workloadIdentitiesForServiceAccount(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 				Name:      serviceAccountKey.Name,
 				Namespace: serviceAccountKey.Namespace,
@@ -1023,7 +1018,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			identity := validWorkloadIdentity(identityKey.Name, identityKey.Namespace)
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 
-			reconciler := &WorkloadIdentityReconciler{Client: indexedWorkloadIdentityClient(identity), Scheme: k8sClient.Scheme()}
+			reconciler := &WorkloadIdentityReconciler{Client: indexedWorkloadIdentityClient(identity)}
 			requests := reconciler.workloadIdentitiesForServiceAccount(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 				Name:      "unrelated",
 				Namespace: serviceAccountKey.Namespace,
@@ -1057,7 +1052,6 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			manager := &fakeWorkloadIdentityManager{}
 			reconciler := &WorkloadIdentityReconciler{
 				Client:  k8sClient,
-				Scheme:  k8sClient.Scheme(),
 				Manager: manager,
 			}
 			result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
@@ -1111,7 +1105,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(manager.deletes).To(Equal(1))
@@ -1137,7 +1131,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, serviceAccount)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
 
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: &fakeWorkloadIdentityManager{}}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: &fakeWorkloadIdentityManager{}}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1162,7 +1156,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Create(ctx, serviceAccount)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
 
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: &fakeWorkloadIdentityManager{}}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: &fakeWorkloadIdentityManager{}}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1193,7 +1187,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(manager.deletes).To(Equal(1))
@@ -1219,7 +1213,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
 
 			manager := &fakeWorkloadIdentityManager{}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(manager.deletes).To(Equal(0))
@@ -1250,7 +1244,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 				workloadidentity.ReasonAzureResourceOwnershipConflict,
 				"foreign identity owns Azure resources",
 			)}
-			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Manager: manager}
+			reconciler := &WorkloadIdentityReconciler{Client: k8sClient, Manager: manager}
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: identityKey})
 			Expect(err).To(MatchError(ContainSubstring("foreign identity")))
 			Expect(manager.deletes).To(Equal(1))
@@ -1274,7 +1268,6 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 			recorder := events.NewFakeRecorder(1)
 			reconciler := &WorkloadIdentityReconciler{
 				Client:   k8sClient,
-				Scheme:   k8sClient.Scheme(),
 				Manager:  manager,
 				Recorder: recorder,
 			}

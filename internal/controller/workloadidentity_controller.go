@@ -30,7 +30,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -70,7 +69,6 @@ const (
 // WorkloadIdentityReconciler reconciles a WorkloadIdentity object.
 type WorkloadIdentityReconciler struct {
 	client.Client
-	Scheme           *runtime.Scheme
 	Manager          workloadidentity.Manager
 	RecoveryDetector workloadidentity.RecoveryDetector
 	Recorder         events.EventRecorder

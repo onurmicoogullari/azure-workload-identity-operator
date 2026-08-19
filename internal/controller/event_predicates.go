@@ -152,10 +152,7 @@ func oidcIssuerDependencyPredicate() predicate.Predicate {
 			if !oldOK || !newOK {
 				return false
 			}
-			if oldIssuer.Generation != newIssuer.Generation {
-				return true
-			}
-			if oldIssuer.DeletionTimestamp == nil && newIssuer.DeletionTimestamp != nil {
+			if primaryResourceUpdate(updateEvent) {
 				return true
 			}
 			return oldIssuer.Status.IssuerURL != newIssuer.Status.IssuerURL || isOIDCIssuerReady(oldIssuer) != isOIDCIssuerReady(newIssuer)
