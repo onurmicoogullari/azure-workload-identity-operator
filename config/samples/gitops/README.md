@@ -12,5 +12,5 @@ for `kustomize/` should set the same sync option. Arrange for an external Secret
 mechanism to create the referenced Azure credential Secret, then replace every
 example value and pin the intended chart version.
 
-See the [GitOps installation guide](../../../docs/gitops.md) for the supported
+See the [GitOps installation guide](../../../docs/content/guides/gitops.md) for the supported
 contract and safety requirements.
