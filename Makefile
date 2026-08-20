@@ -160,6 +160,14 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 vulncheck: govulncheck ## Check reachable Go code for known vulnerabilities.
 	"$(GOVULNCHECK)" ./...
 
+.PHONY: docs-build
+docs-build: ## Type-check and build the documentation site.
+	cd docs && npm ci && npm run typecheck && npm run build
+
+.PHONY: docs-serve
+docs-serve: ## Run the documentation development server.
+	cd docs && npm install && npm run start
+
 ##@ Build
 
 .PHONY: build

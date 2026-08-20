@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#eef5f8"/>
+  <path d="M0 485C240 420 354 551 603 467s373-25 597 52v111H0Z" fill="#dbeaf0"/>
+  <circle cx="918" cy="210" r="108" fill="none" stroke="#1674b8" stroke-width="30"/>
+  <circle cx="1024" cy="326" r="108" fill="none" stroke="#b66c08" stroke-width="30"/>
+  <path d="m990 284-32-35" stroke="#183750" stroke-width="30" stroke-linecap="round"/>
+  <text x="90" y="190" fill="#163047" font-family="sans-serif" font-size="38" font-weight="600">AZURE WORKLOAD IDENTITY OPERATOR</text>
+  <text x="90" y="292" fill="#10283f" font-family="serif" font-size="72" font-weight="700">Identity without</text>
+  <text x="90" y="374" fill="#10283f" font-family="serif" font-size="72" font-weight="700">a client secret.</text>
+  <text x="94" y="444" fill="#456278" font-family="sans-serif" font-size="30">Reconciled OIDC trust for Kubernetes and Azure</text>
+</svg>

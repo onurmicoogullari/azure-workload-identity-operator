@@ -51,16 +51,19 @@ helm upgrade --install azure-workload-identity-operator \
   --set-string azure.credentials.secretRef.keys.clientSecret='AZURE_CLIENT_SECRET'
 ```
 
-If the external mechanism has not created the Secret yet, the manager Pods wait
-without starting. They start automatically after the Secret becomes available.
+If the external mechanism has not created the Secret yet, the manager Pods
+report `CreateContainerConfigError` and wait without starting. This is not
+`CrashLoopBackOff`: the kubelet cannot resolve the required Secret references,
+so the containers have not started. The existing Pods start automatically
+after the Secret becomes available.
 
 ### GitOps
 
 GitOps tools can consume the OCI chart directly, inflate it through Kustomize
 `helmCharts`, or apply reviewed YAML rendered from an exact chart release. See
-the [GitOps guide](docs/gitops.md) for minimal Argo CD and Kustomize examples
-and the shared safety requirements. Application composition remains a platform
-concern.
+the [GitOps guide](docs/content/guides/gitops.md) for minimal Argo CD and
+Kustomize examples and the shared safety requirements. Application composition
+remains a platform concern.
 
 ## Azure scope boundary
 
@@ -91,8 +94,23 @@ behavior, and cleanup.
 ## Operations
 
 - [Helm chart](dist/chart/README.md)
-- [GitOps installation](docs/gitops.md)
-- [Azure and Kubernetes permissions](docs/permissions.md)
-- [Telemetry and OpenTelemetry tracing](docs/telemetry.md)
-- [Controlled workload identity recovery](docs/recovery.md)
-- [Release process](docs/releasing.md)
+- [Documentation home](docs/content/index.mdx)
+- [GitOps installation](docs/content/guides/gitops.md)
+- [Azure and Kubernetes permissions](docs/content/operations/permissions.md)
+- [Telemetry and OpenTelemetry tracing](docs/content/operations/telemetry.md)
+- [Controlled workload identity recovery](docs/content/guides/recovery.md)
+- [Release process](docs/content/contributing/releasing.md)
+
+## Documentation development
+
+The complete Docusaurus manual lives in [`docs/`](docs/README.md). Build it with
+Node.js 20 or later:
+
+```bash
+make docs-build
+```
+
+Pull requests type-check and build the documentation. Successful pushes to
+`main` publish the site to
+<https://onurmicoogullari.github.io/azure-workload-identity-operator/> through
+GitHub Pages.

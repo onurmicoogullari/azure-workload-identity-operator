@@ -41,7 +41,7 @@ The secured Prometheus endpoint remains unchanged. Logs are JSON on stdout and
 carry trace and span IDs when a trace context is active; logs are not exported
 through the OpenTelemetry Logs SDK. This preserves Kubernetes-native log
 collection without adding a duplicate in-process export pipeline. See the
-[telemetry operations guide](../../docs/telemetry.md)
+[telemetry operations guide](../../docs/content/operations/telemetry.md)
 for configuration, sampling, attributes, security boundaries, failure
 behavior, and the OpenShift 4.22.8 acceptance procedure.
 
@@ -57,8 +57,10 @@ their corresponding Azure environment variables.
 
 Let Helm create the namespace with the installation command below. If the
 Secret is not ready when Helm creates the Deployment, Kubernetes starts none of
-the manager containers and the kubelet retries periodically. After the external
-mechanism creates the Secret, the existing Pods start automatically.
+the manager containers. The Pods report `CreateContainerConfigError`, not
+`CrashLoopBackOff`, because the required `secretKeyRef` values cannot yet be
+resolved. The kubelet retries periodically, and the existing Pods start
+automatically after the external mechanism creates the Secret.
 
 Install from source:
 
@@ -99,14 +101,25 @@ For a manual bootstrap, run one of those Helm installations without `--wait`,
 then create the Secret after Helm has created the namespace:
 
 ```bash
-kubectl create secret generic azure-workload-identity-operator-azure-credentials \
+printf 'Azure client secret: '
+IFS= read -r -s AZURE_CLIENT_SECRET
+printf '\n'
+
+printf '%s' "$AZURE_CLIENT_SECRET" | \
+  kubectl create secret generic azure-workload-identity-operator-azure-credentials \
   --namespace azure-workload-identity-operator-system \
   --from-literal=AZURE_CLIENT_ID='<client-id>' \
   --from-literal=AZURE_TENANT_ID='<tenant-id>' \
-  --from-literal=AZURE_CLIENT_SECRET='<client-secret>'
+  --from-file=AZURE_CLIENT_SECRET=/dev/stdin
+
+unset AZURE_CLIENT_SECRET
+
 kubectl rollout status deployment/azure-workload-identity-operator-controller-manager \
   --namespace azure-workload-identity-operator-system
 ```
+
+The silent prompt and stdin keep the client secret out of shell history and
+process arguments. Use an external secrets mechanism for production.
 
 ## Availability profiles
 
@@ -160,7 +173,7 @@ the configured scope differs or the anchor is missing or malformed. Helm
 `lookup` provides an earlier interactive error but is not the enforcement
 boundary. Move to a deliberately planned new installation to change Azure
 scope. For Argo CD and Kustomize consumption examples, see the
-[GitOps guide](../../docs/gitops.md).
+[GitOps guide](../../docs/content/guides/gitops.md).
 
 ## Authentication evolution
 
@@ -196,7 +209,7 @@ updating data in an existing Secret is observed by periodic OIDCIssuer refresh
 Treat permission to create or modify `OIDCIssuer` as a cluster-administrator
 capability: such a user can direct this cluster-trusted controller to retrieve
 a Secret. Optional user-facing RBAC helper roles remain disabled by default.
-See [JWKS key-overlap publication](../../docs/permissions.md#jwks-key-overlap-publication)
+See [JWKS key-overlap publication](../../docs/content/guides/key-rotation.md)
 for the operator's role during an externally managed signing-key rotation.
 
 ## Namespace, naming, and scheduling
@@ -242,7 +255,12 @@ readiness, not an optional best-effort path.
 
 For externally managed internal PKI, set the provider to `existingSecret`,
 provide a pre-created TLS Secret, and provide its PEM CA certificate as the
-non-secret `caBundle` value. No cert-manager resources render in that mode.
+non-secret `caBundle` value. This disables cert-manager resources for the
+operator's validating webhook only. The bundled Microsoft mutating webhook
+still renders its own cert-manager `Issuer` and `Certificate` while
+`azureWorkloadIdentityWebhook.enabled=true`. To render no cert-manager resources,
+also disable the bundled webhook and operate an existing compatible webhook
+installation separately.
 
 ## CRDs, upgrades, and uninstall
 
@@ -310,7 +328,7 @@ retained resources before making any separate scope migration.
 For a permanent, destructive decommission:
 
 1. while the operator is running, follow the documented
-   [OpenShift service-account issuer handoff](../../docs/permissions.md#openshift-service-account-issuer-handoff)
+   [OpenShift service-account issuer handoff](../../docs/content/guides/oidc-issuer.md#hand-off-the-openshift-issuer)
    if the operator manages that setting, then delete each custom resource in
    dependency order and wait for all finalizers and requested Azure cleanup to
    finish;
