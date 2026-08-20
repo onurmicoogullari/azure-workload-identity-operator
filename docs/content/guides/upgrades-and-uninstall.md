@@ -73,6 +73,43 @@ For a namespace move:
 3. transfer Helm ownership annotations and labels on the CRDs, fixed webhook namespace, and copied ConfigMap; and
 4. immediately install the new release with the same scope.
 
+After the old release is absent and the retained startup ConfigMap exists in
+the target namespace, transfer ownership to the new release identity:
+
+```bash
+new_release=azure-workload-identity-operator
+new_namespace=azure-workload-identity-operator-system
+
+kubectl annotate --overwrite \
+  crd/oidcissuers.workloadidentity.azure.micosolutions.se \
+  crd/workloadidentities.workloadidentity.azure.micosolutions.se \
+  crd/workloadidentityrecoveries.workloadidentity.azure.micosolutions.se \
+  namespace/microsoft-azure-workload-identity-webhook-system \
+  meta.helm.sh/release-name="$new_release" \
+  meta.helm.sh/release-namespace="$new_namespace"
+
+kubectl label --overwrite \
+  crd/oidcissuers.workloadidentity.azure.micosolutions.se \
+  crd/workloadidentities.workloadidentity.azure.micosolutions.se \
+  crd/workloadidentityrecoveries.workloadidentity.azure.micosolutions.se \
+  namespace/microsoft-azure-workload-identity-webhook-system \
+  app.kubernetes.io/managed-by=Helm
+
+kubectl annotate --overwrite \
+  --namespace "$new_namespace" \
+  configmap/azure-workload-identity-operator-startup-config \
+  meta.helm.sh/release-name="$new_release" \
+  meta.helm.sh/release-namespace="$new_namespace"
+
+kubectl label --overwrite \
+  --namespace "$new_namespace" \
+  configmap/azure-workload-identity-operator-startup-config \
+  app.kubernetes.io/managed-by=Helm
+```
+
+Install the new release immediately with the same Azure scope, then verify all
+retained resources before making any separate migration.
+
 Do not combine a Helm ownership move with an Azure scope migration.
 
 ## Permanent decommission
