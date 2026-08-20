@@ -37,12 +37,88 @@
         },
         "credentials": {
           "type": "object",
-          "required": [
-            "existingSecret"
-          ],
+          "additionalProperties": false,
           "properties": {
-            "existingSecret": {
-              "type": "string"
+            "secretRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "keys"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 253,
+                  "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+                },
+                "keys": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "clientId",
+                    "tenantId",
+                    "clientSecret"
+                  ],
+                  "properties": {
+                    "clientId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 253,
+                      "pattern": "^[-._a-zA-Z0-9]+$",
+                      "not": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "."
+                            ]
+                          },
+                          {
+                            "pattern": "^\\.\\."
+                          }
+                        ]
+                      }
+                    },
+                    "tenantId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 253,
+                      "pattern": "^[-._a-zA-Z0-9]+$",
+                      "not": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "."
+                            ]
+                          },
+                          {
+                            "pattern": "^\\.\\."
+                          }
+                        ]
+                      }
+                    },
+                    "clientSecret": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 253,
+                      "pattern": "^[-._a-zA-Z0-9]+$",
+                      "not": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "."
+                            ]
+                          },
+                          {
+                            "pattern": "^\\.\\."
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         }

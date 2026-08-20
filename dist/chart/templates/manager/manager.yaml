@@ -108,22 +108,22 @@ spec:
                   fieldPath: spec.serviceAccountName
             - name: OPERATOR_VERSION
               value: {{ .Chart.AppVersion | default "devel" | trimPrefix "v" | quote }}
-            {{- with .Values.azure.credentials.existingSecret }}
+            {{- with .Values.azure.credentials.secretRef }}
             - name: AZURE_CLIENT_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ . | quote }}
-                  key: AZURE_CLIENT_ID
+                  name: {{ required "azure.credentials.secretRef.name is required" .name | quote }}
+                  key: {{ required "azure.credentials.secretRef.keys.clientId is required" .keys.clientId | quote }}
             - name: AZURE_TENANT_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ . | quote }}
-                  key: AZURE_TENANT_ID
+                  name: {{ .name | quote }}
+                  key: {{ required "azure.credentials.secretRef.keys.tenantId is required" .keys.tenantId | quote }}
             - name: AZURE_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ . | quote }}
-                  key: AZURE_CLIENT_SECRET
+                  name: {{ .name | quote }}
+                  key: {{ required "azure.credentials.secretRef.keys.clientSecret is required" .keys.clientSecret | quote }}
             {{- end }}
             {{- with .Values.manager.extraEnv }}
             {{- toYaml . | nindent 12 }}

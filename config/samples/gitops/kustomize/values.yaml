@@ -4,5 +4,10 @@ azure:
   resourceGroupName: rg-platform-workload-identity
   location: swedencentral
   credentials:
-    # This Secret is externally managed and must not be stored in Git.
-    existingSecret: azure-workload-identity-operator-azure-credentials
+    # This Secret is externally managed and its values must not be stored in Git.
+    secretRef:
+      name: azure-workload-identity-operator-azure-credentials
+      keys:
+        clientId: AZURE_CLIENT_ID
+        tenantId: AZURE_TENANT_ID
+        clientSecret: AZURE_CLIENT_SECRET

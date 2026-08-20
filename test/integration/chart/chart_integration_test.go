@@ -309,8 +309,8 @@ func installArguments(release, location string, includeRuntimeValues bool) []str
 	args := []string{"upgrade", "--install", release, chartPath, "--namespace", operatorNamespace}
 	args = append(args, requiredValues(location)...)
 	if includeRuntimeValues {
+		args = append(args, credentialValues()...)
 		args = append(args,
-			setString, "azure.credentials.existingSecret="+credentialsSecret,
 			setString, "manager.image.repository=controller",
 			setString, "manager.image.tag=latest",
 			"--set", "manager.image.pullPolicy=Never",
@@ -323,13 +323,22 @@ func installArguments(release, location string, includeRuntimeValues bool) []str
 func gitOpsTemplateArguments(location string) []string {
 	args := []string{"template", operatorRelease, chartPath, "--namespace", operatorNamespace}
 	args = append(args, requiredValues(location)...)
+	args = append(args, credentialValues()...)
 	return append(args,
-		setString, "azure.credentials.existingSecret="+credentialsSecret,
 		setString, "manager.image.repository=controller",
 		setString, "manager.image.tag=latest",
 		"--set", "manager.image.pullPolicy=Never",
 		"--set", "azureWorkloadIdentityWebhook.enabled=false",
 	)
+}
+
+func credentialValues() []string {
+	return []string{
+		setString, "azure.credentials.secretRef.name=" + credentialsSecret,
+		setString, "azure.credentials.secretRef.keys.clientId=AZURE_CLIENT_ID",
+		setString, "azure.credentials.secretRef.keys.tenantId=AZURE_TENANT_ID",
+		setString, "azure.credentials.secretRef.keys.clientSecret=AZURE_CLIENT_SECRET",
+	}
 }
 
 func changedScopePodFailed(runner commandRunner) (bool, string) {

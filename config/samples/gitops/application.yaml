@@ -20,7 +20,12 @@ spec:
           resourceGroupName: rg-platform-workload-identity
           location: swedencentral
           credentials:
-            existingSecret: azure-workload-identity-operator-azure-credentials
+            secretRef:
+              name: azure-workload-identity-operator-azure-credentials
+              keys:
+                clientId: AZURE_CLIENT_ID
+                tenantId: AZURE_TENANT_ID
+                clientSecret: AZURE_CLIENT_SECRET
   destination:
     server: https://kubernetes.default.svc
     namespace: azure-workload-identity-operator-system

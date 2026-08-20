@@ -49,7 +49,11 @@ behavior, and the OpenShift 4.22.8 acceptance procedure.
 
 Reference a Secret in the release namespace. The Secret is not part of the Helm
 release and its values must never be placed in a values file. Prefer an external
-Secret mechanism for production.
+Secret mechanism for production. Configure the Secret name and all three data
+keys explicitly; the chart does not assume a key naming convention.
+`keys.clientId` names the Secret data entry whose value becomes
+`AZURE_CLIENT_ID`; `keys.tenantId` and `keys.clientSecret` work the same way for
+their corresponding Azure environment variables.
 
 Let Helm create the namespace with the installation command below. If the
 Secret is not ready when Helm creates the Deployment, Kubernetes starts none of
@@ -67,7 +71,10 @@ helm install azure-workload-identity-operator ./dist/chart \
   --set-string azure.subscriptionId='<subscription-id>' \
   --set-string azure.resourceGroupName='<resource-group>' \
   --set-string azure.location='<location>' \
-  --set-string azure.credentials.existingSecret=azure-workload-identity-operator-azure-credentials
+  --set-string azure.credentials.secretRef.name=azure-workload-identity-operator-azure-credentials \
+  --set-string azure.credentials.secretRef.keys.clientId=AZURE_CLIENT_ID \
+  --set-string azure.credentials.secretRef.keys.tenantId=AZURE_TENANT_ID \
+  --set-string azure.credentials.secretRef.keys.clientSecret=AZURE_CLIENT_SECRET
 ```
 
 Published releases are available as OCI charts:
@@ -82,7 +89,10 @@ helm install azure-workload-identity-operator \
   --set-string azure.subscriptionId='<subscription-id>' \
   --set-string azure.resourceGroupName='<resource-group>' \
   --set-string azure.location='<location>' \
-  --set-string azure.credentials.existingSecret=azure-workload-identity-operator-azure-credentials
+  --set-string azure.credentials.secretRef.name=azure-workload-identity-operator-azure-credentials \
+  --set-string azure.credentials.secretRef.keys.clientId=AZURE_CLIENT_ID \
+  --set-string azure.credentials.secretRef.keys.tenantId=AZURE_TENANT_ID \
+  --set-string azure.credentials.secretRef.keys.clientSecret=AZURE_CLIENT_SECRET
 ```
 
 For a manual bootstrap, run one of those Helm installations without `--wait`,
@@ -154,9 +164,10 @@ scope. For Argo CD and Kustomize consumption examples, see the
 
 ## Authentication evolution
 
-`azure.credentials.existingSecret` is the initial bootstrap path. The Secret
-must contain the three Azure SDK environment keys shown above. To move
-the operator itself to an already-established workload or managed identity:
+`azure.credentials.secretRef` is the initial bootstrap path. Its `name` and
+three entries under `keys` are all required and must be non-empty. The Secret
+must be in the Helm release namespace. To move the operator itself to an
+already-established workload or managed identity:
 
 1. establish and verify that identity outside this release;
 2. for workload identity, set the ServiceAccount client-ID annotation through
@@ -164,7 +175,8 @@ the operator itself to an already-established workload or managed identity:
    `manager.podLabels.azure.workload.identity/use: "true"` so the bundled
    mutating webhook injects the projected token configuration;
 3. grant the identity the documented Azure permissions;
-4. upgrade with `azure.credentials.existingSecret=""`;
+4. remove `azure.credentials.secretRef` from the values and upgrade without
+   `--reuse-values`;
 5. remove the old Secret only after the operator is Ready and reconciliation is
    verified.
 

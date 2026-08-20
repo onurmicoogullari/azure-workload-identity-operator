@@ -2030,6 +2030,12 @@ create_operator_credentials_secret() {
 }
 
 install_operator_release() {
+  local -a credential_values=(
+    --set-string "azure.credentials.secretRef.name=$operator_credentials_secret"
+    --set-string azure.credentials.secretRef.keys.clientId=AZURE_CLIENT_ID
+    --set-string azure.credentials.secretRef.keys.tenantId=AZURE_TENANT_ID
+    --set-string azure.credentials.secretRef.keys.clientSecret=AZURE_CLIENT_SECRET
+  )
   local -a image_values
 
   if [[ -n $operator_candidate_run_id ]]; then
@@ -2058,7 +2064,7 @@ install_operator_release() {
       --set-string "azure.subscriptionId=$AZURE_SUBSCRIPTION_ID" \
       --set-string "azure.resourceGroupName=$AZURE_RESOURCE_GROUP_NAME" \
       --set-string "azure.location=$AZURE_LOCATION" \
-      --set-string "azure.credentials.existingSecret=$operator_credentials_secret"
+      "${credential_values[@]}"
   else
     make --no-print-directory -C "$repo_root" helm-lint
   fi
@@ -2075,7 +2081,7 @@ install_operator_release() {
     --set-string "azure.subscriptionId=$AZURE_SUBSCRIPTION_ID" \
     --set-string "azure.resourceGroupName=$AZURE_RESOURCE_GROUP_NAME" \
     --set-string "azure.location=$AZURE_LOCATION" \
-    --set-string "azure.credentials.existingSecret=$operator_credentials_secret" \
+    "${credential_values[@]}" \
     --rollback-on-failure \
     --wait \
     --timeout "$wait_timeout"; then
