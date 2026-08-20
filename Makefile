@@ -338,8 +338,21 @@ HELM_AZURE_TENANT_ID ?=
 HELM_AZURE_SUBSCRIPTION_ID ?=
 HELM_AZURE_RESOURCE_GROUP_NAME ?=
 HELM_AZURE_LOCATION ?=
-## Optional existing Secret containing AZURE_CLIENT_ID, AZURE_TENANT_ID, and AZURE_CLIENT_SECRET
-HELM_AZURE_CREDENTIALS_SECRET ?=
+## Optional Azure credential Secret reference; all four values are required together
+HELM_AZURE_CREDENTIALS_SECRET_NAME ?=
+HELM_AZURE_CREDENTIALS_CLIENT_ID_KEY ?=
+HELM_AZURE_CREDENTIALS_TENANT_ID_KEY ?=
+HELM_AZURE_CREDENTIALS_CLIENT_SECRET_KEY ?=
+HELM_AZURE_CREDENTIALS_CONFIGURED = $(strip \
+	$(HELM_AZURE_CREDENTIALS_SECRET_NAME) \
+	$(HELM_AZURE_CREDENTIALS_CLIENT_ID_KEY) \
+	$(HELM_AZURE_CREDENTIALS_TENANT_ID_KEY) \
+	$(HELM_AZURE_CREDENTIALS_CLIENT_SECRET_KEY))
+HELM_AZURE_CREDENTIALS_ARGS = $(if $(HELM_AZURE_CREDENTIALS_CONFIGURED), \
+	--set-string azure.credentials.secretRef.name="$(HELM_AZURE_CREDENTIALS_SECRET_NAME)" \
+	--set-string azure.credentials.secretRef.keys.clientId="$(HELM_AZURE_CREDENTIALS_CLIENT_ID_KEY)" \
+	--set-string azure.credentials.secretRef.keys.tenantId="$(HELM_AZURE_CREDENTIALS_TENANT_ID_KEY)" \
+	--set-string azure.credentials.secretRef.keys.clientSecret="$(HELM_AZURE_CREDENTIALS_CLIENT_SECRET_KEY)")
 
 .PHONY: helm-dependency
 helm-dependency: ## Rebuild the vendored Helm dependency archive from Chart.lock.
@@ -384,7 +397,7 @@ helm-deploy: helm-dependency ## Deploy the complete operator via Helm. Set IMG a
 		--set-string azure.subscriptionId="$(HELM_AZURE_SUBSCRIPTION_ID)" \
 		--set-string azure.resourceGroupName="$(HELM_AZURE_RESOURCE_GROUP_NAME)" \
 		--set-string azure.location="$(HELM_AZURE_LOCATION)" \
-		$(if $(HELM_AZURE_CREDENTIALS_SECRET),--set-string azure.credentials.existingSecret="$(HELM_AZURE_CREDENTIALS_SECRET)",) \
+		$(HELM_AZURE_CREDENTIALS_ARGS) \
 		--rollback-on-failure \
 		--wait \
 		--timeout 10m \

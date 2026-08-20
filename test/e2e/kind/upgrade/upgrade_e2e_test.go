@@ -71,12 +71,13 @@ type commandRunner struct {
 }
 
 type revisionArtifact struct {
-	commit    string
-	sourceDir string
-	chart     string
-	image     string
-	imageTag  string
-	crdNames  []string
+	commit                  string
+	sourceDir               string
+	chart                   string
+	image                   string
+	imageTag                string
+	crdNames                []string
+	usesCredentialSecretRef bool
 }
 
 type resourceSnapshot struct {
@@ -278,6 +279,10 @@ func prepareRevision(
 	}
 	imageTag := strings.Join([]string{role, commit, runID}, "-")
 	crdNames := discoverPackagedCRDNames(t, runner, chart)
+	managerTemplate, err := os.ReadFile(filepath.Join(chartDir, "templates", "manager", "manager.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Logf("Packaged %s CRDs: %s", role, strings.Join(crdNames, ", "))
 	return revisionArtifact{
 		commit:    commit,
@@ -286,6 +291,10 @@ func prepareRevision(
 		image:     testImageRepository + ":" + imageTag,
 		imageTag:  imageTag,
 		crdNames:  crdNames,
+		usesCredentialSecretRef: bytes.Contains(
+			managerTemplate,
+			[]byte(".Values.azure.credentials.secretRef"),
+		),
 	}
 }
 
@@ -406,8 +415,8 @@ func installOrUpgradeArgs(artifact revisionArtifact, install bool) []string {
 		"--namespace", operatorNamespace,
 	)
 	args = append(args, azureValueArgs()...)
+	args = append(args, credentialValueArgs(artifact)...)
 	args = append(args,
-		"--set-string", "azure.credentials.existingSecret="+credentialsSecret,
 		"--set-string", "manager.image.repository="+testImageRepository,
 		"--set-string", "manager.image.tag="+artifact.imageTag,
 		"--set", "manager.image.pullPolicy=Never",
@@ -415,6 +424,18 @@ func installOrUpgradeArgs(artifact revisionArtifact, install bool) []string {
 		"--history-max", "10",
 	)
 	return args
+}
+
+func credentialValueArgs(artifact revisionArtifact) []string {
+	if !artifact.usesCredentialSecretRef {
+		return []string{"--set-string", "azure.credentials.existingSecret=" + credentialsSecret}
+	}
+	return []string{
+		"--set-string", "azure.credentials.secretRef.name=" + credentialsSecret,
+		"--set-string", "azure.credentials.secretRef.keys.clientId=AZURE_CLIENT_ID",
+		"--set-string", "azure.credentials.secretRef.keys.tenantId=AZURE_TENANT_ID",
+		"--set-string", "azure.credentials.secretRef.keys.clientSecret=AZURE_CLIENT_SECRET",
+	}
 }
 
 func azureValueArgs() []string {

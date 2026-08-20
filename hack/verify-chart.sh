@@ -8,6 +8,7 @@ helm_binary=${HELM:-helm}
 tmpdir=$(mktemp -d)
 rendered=$tmpdir/rendered.yaml
 existing_secret_rendered=$tmpdir/existing-secret.yaml
+credential_secret_rendered=$tmpdir/credential-secret.yaml
 digest_rendered=$tmpdir/digest.yaml
 telemetry_rendered=$tmpdir/telemetry.yaml
 production_profile_rendered=$tmpdir/production-profile.yaml
@@ -72,6 +73,25 @@ render_and_verify_source_sync() {
   fi
 
   "$helm_binary" template "$release_name" "$chart_dir" \
+    --namespace "$namespace" \
+    --show-only templates/manager/manager.yaml \
+    --set-string azure.credentials.secretRef.name=operator-credentials \
+    --set-string azure.credentials.secretRef.keys.clientId=client-id \
+    --set-string azure.credentials.secretRef.keys.tenantId=tenant-id \
+    --set-string azure.credentials.secretRef.keys.clientSecret=client-secret \
+    "${required_values[@]}" >"$credential_secret_rendered"
+  for expected in \
+    'name: "operator-credentials"' \
+    'key: "client-id"' \
+    'key: "tenant-id"' \
+    'key: "client-secret"'; do
+    grep -Fq "$expected" "$credential_secret_rendered" || {
+      echo "manager credential Secret reference is missing expected content: $expected" >&2
+      exit 1
+    }
+  done
+
+  "$helm_binary" template "$release_name" "$chart_dir" \
     --namespace custom-operator-system \
     --set-string azure.subscriptionId=00000000-0000-0000-0000-000000000000 \
     --set-string azure.resourceGroupName=rg-chart-test \
@@ -131,6 +151,44 @@ verify_rejected_values() {
     --set-string azure.subscriptionId= \
     --set-string azure.resourceGroupName=rg \
     --set-string azure.location=location
+
+  assert_template_rejected "chart unexpectedly accepted an empty credential Secret name" \
+    "${required_values[@]}" \
+    --set-string azure.credentials.secretRef.name= \
+    --set-string azure.credentials.secretRef.keys.clientId=client-id \
+    --set-string azure.credentials.secretRef.keys.tenantId=tenant-id \
+    --set-string azure.credentials.secretRef.keys.clientSecret=client-secret
+
+  assert_template_rejected "chart unexpectedly accepted an invalid credential Secret name" \
+    "${required_values[@]}" \
+    --set-string 'azure.credentials.secretRef.name=invalid name' \
+    --set-string azure.credentials.secretRef.keys.clientId=client-id \
+    --set-string azure.credentials.secretRef.keys.tenantId=tenant-id \
+    --set-string azure.credentials.secretRef.keys.clientSecret=client-secret
+
+  assert_template_rejected "chart unexpectedly accepted incomplete credential Secret key selectors" \
+    "${required_values[@]}" \
+    --set-string azure.credentials.secretRef.name=operator-credentials \
+    --set-string azure.credentials.secretRef.keys.clientId=client-id \
+    --set-string azure.credentials.secretRef.keys.tenantId=tenant-id
+
+  assert_template_rejected "chart unexpectedly accepted an empty credential Secret key selector" \
+    "${required_values[@]}" \
+    --set-string azure.credentials.secretRef.name=operator-credentials \
+    --set-string azure.credentials.secretRef.keys.clientId= \
+    --set-string azure.credentials.secretRef.keys.tenantId=tenant-id \
+    --set-string azure.credentials.secretRef.keys.clientSecret=client-secret
+
+  assert_template_rejected "chart unexpectedly accepted an invalid credential Secret key selector" \
+    "${required_values[@]}" \
+    --set-string azure.credentials.secretRef.name=operator-credentials \
+    --set-string azure.credentials.secretRef.keys.clientId=client/id \
+    --set-string azure.credentials.secretRef.keys.tenantId=tenant-id \
+    --set-string azure.credentials.secretRef.keys.clientSecret=client-secret
+
+  assert_template_rejected "chart unexpectedly accepted the removed existingSecret value" \
+    "${required_values[@]}" \
+    --set-string azure.credentials.existingSecret=operator-credentials
 
   assert_template_rejected "chart unexpectedly accepted a configurable operator webhook port" \
     "${required_values[@]}" \

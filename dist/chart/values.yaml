@@ -5,10 +5,16 @@ azure:
   subscriptionId: ""
   resourceGroupName: ""
   location: ""
-  credentials:
-    # Existing Secret with AZURE_CLIENT_ID, AZURE_TENANT_ID, and
-    # AZURE_CLIENT_SECRET keys. Leave empty for Workload/Managed Identity.
-    existingSecret: ""
+  # Omit secretRef for Workload/Managed Identity. When configured, the Secret
+  # must be in the Helm release namespace and every field is required.
+  credentials: {}
+  # credentials:
+  #   secretRef:
+  #     name: azure-workload-identity-operator-azure-credentials
+  #     keys:
+  #       clientId: client-id
+  #       tenantId: tenant-id
+  #       clientSecret: client-secret
 
 manager:
   replicas: 2

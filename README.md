@@ -20,8 +20,8 @@ Workload Identity mutating webhook.
 Before installation, provide:
 
 - cert-manager;
-- an external mechanism that creates a Secret containing `AZURE_CLIENT_ID`,
-  `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET`; and
+- an external mechanism that creates a Secret containing the operator's Azure
+  client ID, tenant ID, and client secret; and
 - the cluster's Azure subscription ID, resource group, and location.
 
 Let Helm or the GitOps tool create the operator namespace during installation.
@@ -45,7 +45,10 @@ helm upgrade --install azure-workload-identity-operator \
   --set-string azure.subscriptionId='<subscription-id>' \
   --set-string azure.resourceGroupName='<resource-group>' \
   --set-string azure.location='<location>' \
-  --set-string azure.credentials.existingSecret='<secret-name>'
+  --set-string azure.credentials.secretRef.name='<secret-name>' \
+  --set-string azure.credentials.secretRef.keys.clientId='AZURE_CLIENT_ID' \
+  --set-string azure.credentials.secretRef.keys.tenantId='AZURE_TENANT_ID' \
+  --set-string azure.credentials.secretRef.keys.clientSecret='AZURE_CLIENT_SECRET'
 ```
 
 If the external mechanism has not created the Secret yet, the manager Pods wait

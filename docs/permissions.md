@@ -27,10 +27,11 @@ chart maps `azure.subscriptionId`, `azure.resourceGroupName`, and
 installation identity and cannot change during an in-place Helm upgrade.
 
 For Service Principal bootstrap, create a Secret in the release namespace with
-`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET`, then set only
-its name in `azure.credentials.existingSecret`. Do not put secret values in a
-Helm values file. See the [chart documentation](../dist/chart/README.md) for
-the workload-identity migration sequence.
+the client ID, tenant ID, and client secret. Configure its name and the three
+non-empty data key selectors under `azure.credentials.secretRef`. Do not put
+secret values in a Helm values file. See the
+[chart documentation](../dist/chart/README.md) for the workload-identity
+migration sequence.
 
 Required for reconciling the shared scope and `OIDCIssuer` Azure resources:
 

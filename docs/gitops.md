@@ -13,8 +13,9 @@ do not require app-of-apps, ApplicationSet, or any other composition model.
 ## Before you install
 
 Provide cert-manager and arrange for an externally managed Secret containing
-`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_SECRET`. Keep
-credentials out of Git and Helm values.
+the operator's Azure client ID, tenant ID, and client secret. Configure the
+Secret name and all three data keys explicitly. Keep credentials out of Git and
+Helm values.
 
 Let the installation tool create the operator namespace: use Helm's
 `--create-namespace` flag or Argo CD's `CreateNamespace=true` sync option. When
