@@ -20,8 +20,8 @@ export default function Homepage() {
             ServiceAccount relationship as one inspectable control plane.
           </p>
           <div className={styles.actions}>
-            <Link className={styles.primaryAction} to="/getting-started/quickstart">
-              Follow the quickstart
+            <Link className={styles.primaryAction} to="/getting-started/installation">
+              Install the operator
             </Link>
             <Link className={styles.secondaryAction} to="/architecture/overview">
               Read the architecture
