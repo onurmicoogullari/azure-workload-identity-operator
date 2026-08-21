@@ -22,6 +22,6 @@ annotations:
 dependencies:
   - name: workload-identity-webhook
     alias: azureWorkloadIdentityWebhook
-    version: 1.6.0-azwi.2
+    version: 1.6.0-azwi.3
     repository: file://../vendor/workload-identity-webhook
     condition: azureWorkloadIdentityWebhook.enabled

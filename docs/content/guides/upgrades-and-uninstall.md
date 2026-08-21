@@ -29,6 +29,72 @@ Prefer an explicit environment values file over `--reuse-values` in controlled d
 
 CRDs live in chart templates rather than Helm's one-time `crds/` directory, so schema changes are applied during upgrade. They carry `helm.sh/resource-policy: keep`.
 
+### Change a webhook certificate provider
+
+Treat a provider change as an availability-sensitive migration because both
+admission configurations fail closed.
+
+When the old and new providers use different CAs, matching admission requests
+can fail during the rollout. Pause affected custom-resource changes and
+opted-in Pod creation until both webhook Deployments and CA bundles are
+verified.
+
+1. Change the shared `global.webhookCertificates.provider` value; the chart
+   applies it to both webhooks.
+2. Before selecting `selfManaged` on an existing release, create the
+   operator TLS Secret in the release namespace and the bundled-webhook TLS Secret in
+   `microsoft-azure-workload-identity-webhook-system`. Confirm each certificate
+   covers its Service DNS name and each configured PEM CA verifies it.
+3. Before selecting `certManager`, install cert-manager and wait until it is
+   Ready. Before selecting `openShiftServiceCA`, confirm the OpenShift service
+   CA operator is available.
+4. Render the upgrade and verify each webhook has exactly one owner: a
+   cert-manager injection annotation, an embedded self-managed CA bundle,
+   or an OpenShift injection annotation.
+5. Upgrade during a maintenance window, wait for both Deployments, and prove
+   API-server admission through both webhook configurations.
+
+Helm 4 uses server-side apply. When leaving a controller-injected CA mode, the
+old cert-manager or OpenShift injector can still own
+`webhooks[].clientConfig.caBundle` at the first upgrade. After verifying the
+rendered handoff, add `--force-conflicts` to that provider-switching upgrade so
+Helm deliberately takes ownership of the embedded CA or removes the old
+injected field. Do not make this a blanket flag for routine upgrades. Helm 3's
+client-side update path does not use server-side field ownership.
+
+The default OpenShift Secret names differ from the cert-manager Secret names.
+This prevents the old and new controllers from racing over one Secret during a
+provider switch. Do not override them to the same name during a migration.
+
+Rollback has the same prerequisites as a forward switch. In particular,
+install cert-manager and wait for it to become Ready before rolling back to a
+revision that selects `certManager`; retain externally supplied Secrets until
+a rollback window has closed.
+
+### Rotate a self-managed webhook CA
+
+Both admission configurations use `failurePolicy: Fail`. Do not replace a
+serving certificate and its trusted CA in a single uncoordinated step: the API
+server can reject matching requests while one side still uses the old CA.
+
+Use this three-phase rollover independently for the operator webhook, the
+bundled Azure Workload Identity webhook, or both:
+
+1. **Trust both CAs.** Concatenate the old and new PEM CA certificates, then
+   upgrade the release with the combined bundle in the corresponding
+   `global.webhookCertificates.selfManaged.<webhook>.caBundle` value. Verify
+   that the admission configuration contains the new bundle before continuing.
+2. **Rotate the serving Secret.** Replace `tls.crt` and `tls.key` in the
+   corresponding Secret with a certificate issued by the new CA. The webhook
+   reloads the mounted key pair without a Pod restart. Verify the Deployment is
+   Ready and exercise the affected admission path.
+3. **Remove the old CA.** Upgrade the release again with only the new CA in the
+   bundle, then recheck admission.
+
+Renewing a serving certificate under the same CA only requires step 2. If both
+webhooks share a CA, keep the old CA in both admission bundles until both
+serving Secrets use certificates issued by the new CA.
+
 ## Roll back
 
 Use a chart version that supports every persisted CRD field currently in use. A Helm rollback can restore controller and webhook resources but does not downgrade stored objects automatically.

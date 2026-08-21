@@ -105,26 +105,46 @@ telemetry:
     # OpenTelemetry Operator, Collector, or backend.
     enabled: false
 
-webhook:
-  certificates:
-    # Supported values: certManager, existingSecret.
+global:
+  # One provider owns certificates for both admission webhook servers. Helm's
+  # global scope makes the same selection available to the bundled webhook
+  # subchart, so the two webhooks cannot accidentally use different owners.
+  webhookCertificates:
+    # Supported values: certManager, openShiftServiceCA, selfManaged.
     provider: certManager
     certManager:
-      secretName: webhook-server-cert
-    existingSecret:
-      name: ""
-      # PEM CA bundle used by the API server to verify the serving certificate.
-      caBundle: ""
+      operator:
+        secretName: webhook-server-cert
+      azureWorkloadIdentity:
+        secretName: azure-wi-webhook-server-cert
+    openShiftServiceCA:
+      operator:
+        # Created and rotated by the OpenShift service CA operator in the Helm
+        # release namespace. This mode must be selected explicitly.
+        secretName: webhook-server-cert-openshift
+      azureWorkloadIdentity:
+        # Created and rotated by the OpenShift service CA operator in
+        # azureWorkloadIdentityWebhook.namespaceOverride.
+        secretName: azure-wi-webhook-server-cert-openshift
+    selfManaged:
+      # Self-managed means that the installer owns issuance, rotation, Secret
+      # population, and CA bundle updates. It does not mean self-signed.
+      operator:
+        secretName: ""
+        # PEM CA bundle used by the API server to verify the serving certificate.
+        caBundle: ""
+      azureWorkloadIdentity:
+        # The Secret is mounted from azureWorkloadIdentityWebhook.namespaceOverride.
+        secretName: ""
+        # PEM CA bundle used by the API server to verify the serving certificate.
+        caBundle: ""
 
 # Bundled Microsoft Azure Workload Identity mutating webhook. Disable only when
 # the cluster already owns a compatible installation.
 azureWorkloadIdentityWebhook:
   enabled: true
-  # This chart owns the bundled dependency as a cluster singleton. The
-  # namespace and certificate mode are immutable security boundaries.
+  # This chart owns the bundled dependency as a cluster singleton.
   namespaceOverride: microsoft-azure-workload-identity-webhook-system
-  disableCertRotation: true
-  certManagerCertificateName: azure-wi-webhook-serving-cert
   replicaCount: 2
   image:
     repository: mcr.microsoft.com/oss/v2/azure/workload-identity/webhook

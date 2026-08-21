@@ -17,10 +17,6 @@ Optional env:
   AZURE_CLIENT_SECRET                         existing Service Principal fallback; set the complete credential trio
   AZURE_SUBSCRIPTION_ID                       default: current az account
   AZURE_LOCATION                              default: swedencentral
-  INSTALL_CERT_MANAGER                        default: true
-  CERT_MANAGER_VERSION                        default: v1.21.1
-  CERT_MANAGER_NAMESPACE                      default: cert-manager
-  CERT_MANAGER_RELEASE                        default: cert-manager
   OPERATOR_NAMESPACE                          default: azure-workload-identity-operator-system
   OPERATOR_RELEASE                            default: azure-workload-identity-operator
   OPERATOR_IMAGE_NAME                         default: azure-workload-identity-operator
@@ -142,7 +138,7 @@ begin_step() {
 
 script_step_description() {
   case "$1" in
-    1) printf 'Create the ephemeral operator identity, verify test-owned Azure resources are absent, and install cert-manager.' ;;
+    1) printf 'Create the ephemeral operator identity and verify test-owned Azure resources are absent.' ;;
     2) printf 'Build the operator image in the internal OpenShift registry.' ;;
     3) printf 'Install the complete operator Helm release.' ;;
     4) printf 'Verify packaged deployments, certificates, and API-server webhooks.' ;;
@@ -353,10 +349,6 @@ export AZURE_TENANT_ID
 export AZURE_LOCATION
 export AZURE_RESOURCE_GROUP_NAME
 export AZURE_KEY_VAULT_RESOURCE_GROUP_NAME
-install_cert_manager=${INSTALL_CERT_MANAGER:-true}
-cert_manager_version=${CERT_MANAGER_VERSION:-v1.21.1}
-cert_manager_namespace=${CERT_MANAGER_NAMESPACE:-cert-manager}
-cert_manager_release=${CERT_MANAGER_RELEASE:-cert-manager}
 operator_namespace=${OPERATOR_NAMESPACE:-azure-workload-identity-operator-system}
 webhook_namespace=microsoft-azure-workload-identity-webhook-system
 operator_release=${OPERATOR_RELEASE:-azure-workload-identity-operator}
@@ -487,9 +479,6 @@ created_operator_release=false
 created_operator_buildconfig=false
 created_operator_credentials_secret=false
 created_operator_crds=false
-created_cert_manager_namespace=false
-created_cert_manager_release=false
-created_cert_manager_crds=false
 created_test_namespace=false
 created_retiring_signing_key_secret=false
 created_ephemeral_operator_application=false
@@ -768,31 +757,6 @@ cleanup_webhook_namespace() {
   if [[ $created_webhook_namespace == "true" ]]; then
     cleanup_namespace "$webhook_namespace" || return $?
     created_webhook_namespace=false
-  fi
-}
-
-cleanup_cert_manager_release() {
-  if [[ $created_cert_manager_release == "true" ]]; then
-    cleanup_helm_release "$cert_manager_release" "$cert_manager_namespace" || return $?
-    created_cert_manager_release=false
-  fi
-}
-
-cleanup_cert_manager_crds() {
-  if [[ $created_cert_manager_crds == "true" ]]; then
-    log DELETE "Deleting cert-manager CRDs created by the e2e test"
-    kubernetes_cleanup_command "$wait_timeout" oc delete crd \
-      certificaterequests.cert-manager.io certificates.cert-manager.io challenges.acme.cert-manager.io \
-      clusterissuers.cert-manager.io issuers.cert-manager.io orders.acme.cert-manager.io \
-      --ignore-not-found --wait=true --timeout="$wait_timeout" >/dev/null || return $?
-    created_cert_manager_crds=false
-  fi
-}
-
-cleanup_cert_manager_namespace() {
-  if [[ $created_cert_manager_namespace == "true" ]]; then
-    cleanup_namespace "$cert_manager_namespace" || return $?
-    created_cert_manager_namespace=false
   fi
 }
 
@@ -1381,9 +1345,6 @@ cleanup() {
   cleanup_step "delete test namespace" cleanup_test_namespace
   cleanup_step "delete retained Azure workload identity webhook namespace" cleanup_webhook_namespace
   cleanup_step "delete operator namespace" cleanup_operator_namespace
-  cleanup_step "uninstall cert-manager" cleanup_cert_manager_release
-  cleanup_step "delete cert-manager CRDs" cleanup_cert_manager_crds
-  cleanup_step "delete cert-manager namespace" cleanup_cert_manager_namespace
   cleanup_step "delete ephemeral operator Entra application" cleanup_ephemeral_operator_identity
   cleanup_step "delete temporary directory" cleanup_tmpdir
 
@@ -1826,53 +1787,6 @@ wait_for_oidc_storage_account_deleted() {
   return 1
 }
 
-install_cert_manager_dependency() {
-  local release_preexisting=false
-
-  if oc get crd certificates.cert-manager.io >/dev/null 2>&1; then
-    log CONFIG "cert-manager CRDs already exist; the e2e test will not delete them"
-  else
-    created_cert_manager_crds=true
-  fi
-
-  if [[ $install_cert_manager != "true" ]]; then
-    oc get crd certificates.cert-manager.io >/dev/null 2>&1 || \
-      die "cert-manager is required when INSTALL_CERT_MANAGER=false"
-    log SKIP "Using the existing cert-manager installation"
-    return
-  fi
-
-  if helm status "$cert_manager_release" -n "$cert_manager_namespace" >/dev/null 2>&1; then
-    release_preexisting=true
-  fi
-  if [[ $release_preexisting == "true" ]]; then
-    log SKIP "Using existing cert-manager Helm release $cert_manager_namespace/$cert_manager_release"
-    return
-  fi
-
-  if ! oc get namespace "$cert_manager_namespace" >/dev/null 2>&1; then
-    log CREATE "Creating cert-manager namespace $cert_manager_namespace"
-    oc create namespace "$cert_manager_namespace" >/dev/null
-    created_cert_manager_namespace=true
-  fi
-
-  log INSTALL "Installing cert-manager $cert_manager_version"
-  helm repo add jetstack https://charts.jetstack.io --force-update >/dev/null
-  helm repo update jetstack >/dev/null
-  created_cert_manager_release=true
-  if ! helm upgrade --install "$cert_manager_release" jetstack/cert-manager \
-    --version "$cert_manager_version" \
-    --namespace "$cert_manager_namespace" \
-    --set crds.enabled=true \
-    --wait \
-    --timeout "$wait_timeout"; then
-    log ERROR "Failed to install cert-manager"
-    dump_namespaced_resources "$cert_manager_namespace"
-    oc get events -n "$cert_manager_namespace" --sort-by=.lastTimestamp >&2 || true
-    exit 1
-  fi
-}
-
 ensure_operator_namespace() {
   if ! oc get namespace "$operator_namespace" >/dev/null 2>&1; then
     log CREATE "Creating operator namespace $operator_namespace"
@@ -2064,6 +1978,7 @@ install_operator_release() {
       --set-string "azure.subscriptionId=$AZURE_SUBSCRIPTION_ID" \
       --set-string "azure.resourceGroupName=$AZURE_RESOURCE_GROUP_NAME" \
       --set-string "azure.location=$AZURE_LOCATION" \
+      --set-string global.webhookCertificates.provider=openShiftServiceCA \
       "${credential_values[@]}"
   else
     make --no-print-directory -C "$repo_root" helm-lint
@@ -2081,6 +1996,7 @@ install_operator_release() {
     --set-string "azure.subscriptionId=$AZURE_SUBSCRIPTION_ID" \
     --set-string "azure.resourceGroupName=$AZURE_RESOURCE_GROUP_NAME" \
     --set-string "azure.location=$AZURE_LOCATION" \
+    --set-string global.webhookCertificates.provider=openShiftServiceCA \
     "${credential_values[@]}" \
     --rollback-on-failure \
     --wait \
@@ -2090,11 +2006,29 @@ install_operator_release() {
   fi
 }
 
+wait_for_admission_ca_bundle() {
+  local resource=$1
+  local name=$2
+  local description=$3
+  local ca_bundle=""
+  local deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
+
+  log WATCH "Waiting for OpenShift service CA injection into $description"
+  while ((SECONDS < deadline)); do
+    ca_bundle=$(oc get "$resource" "$name" \
+      -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null || true)
+    [[ -n $ca_bundle ]] && return
+    sleep_until_deadline "$deadline" 2 || true
+  done
+
+  die "$resource/$name has no injected CA bundle"
+}
+
 verify_operator_release() {
-  local ca_bundle
-  local deadline
   local deployed_operator_image
   local failure_policies
+  local helm_manifest
+  local annotation
   local pod
   local permission
   local scc
@@ -2106,10 +2040,33 @@ verify_operator_release() {
     -n "$operator_namespace" --timeout="$wait_timeout"
   oc rollout status deployment/azure-wi-webhook-controller-manager \
     -n "$webhook_namespace" --timeout="$wait_timeout"
-  oc wait certificate/azure-workload-identity-operator-serving-cert \
-    -n "$operator_namespace" --for=condition=Ready --timeout="$wait_timeout"
-  oc wait certificate/azure-wi-webhook-serving-cert \
-    -n "$webhook_namespace" --for=condition=Ready --timeout="$wait_timeout"
+  oc get secret webhook-server-cert-openshift -n "$operator_namespace" \
+    -o jsonpath='{.data.tls\.crt}' | grep -q . || \
+    die "OpenShift service CA did not populate the operator serving Secret"
+  oc get secret azure-wi-webhook-server-cert-openshift -n "$webhook_namespace" \
+    -o jsonpath='{.data.tls\.crt}' | grep -q . || \
+    die "OpenShift service CA did not populate the Azure webhook serving Secret"
+  annotation=$(oc get service azure-workload-identity-operator-webhook-service \
+    -n "$operator_namespace" \
+    -o go-template='{{index .metadata.annotations "service.beta.openshift.io/serving-cert-secret-name"}}')
+  [[ $annotation == "webhook-server-cert-openshift" ]] || \
+    die "operator webhook Service does not request its OpenShift serving Secret"
+  annotation=$(oc get service azure-wi-webhook-webhook-service \
+    -n "$webhook_namespace" \
+    -o go-template='{{index .metadata.annotations "service.beta.openshift.io/serving-cert-secret-name"}}')
+  [[ $annotation == "azure-wi-webhook-server-cert-openshift" ]] || \
+    die "Azure webhook Service does not request its OpenShift serving Secret"
+  for configuration in \
+    validatingwebhookconfiguration/azure-workload-identity-operator-validating-webhook-configuration \
+    mutatingwebhookconfiguration/azure-wi-webhook-mutating-webhook-configuration; do
+    annotation=$(oc get "$configuration" \
+      -o go-template='{{index .metadata.annotations "service.beta.openshift.io/inject-cabundle"}}')
+    [[ $annotation == "true" ]] || die "$configuration does not request OpenShift service CA injection"
+  done
+  helm_manifest=$(helm get manifest "$operator_release" -n "$operator_namespace")
+  if grep -Eq '^apiVersion: cert-manager.io/|cert-manager.io/inject-ca-from' <<<"$helm_manifest"; then
+    die "OpenShift service CA mode rendered cert-manager resources or annotations"
+  fi
   if [[ -n $operator_image_digest ]]; then
     deployed_operator_image=$(oc get deployment azure-workload-identity-operator-controller-manager \
       -n "$operator_namespace" -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].image}')
@@ -2117,28 +2074,12 @@ verify_operator_release() {
       die "operator Deployment uses $deployed_operator_image, expected the validated candidate digest"
   fi
 
-  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
-  log WATCH "Waiting for cert-manager CA injection into the validating webhooks"
-  while ((SECONDS < deadline)); do
-    ca_bundle=$(oc get validatingwebhookconfiguration \
-      azure-workload-identity-operator-validating-webhook-configuration \
-      -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null || true)
-    [[ -n $ca_bundle ]] && break
-    sleep_until_deadline "$deadline" 2 || true
-  done
-  [[ -n $ca_bundle ]] || die "operator ValidatingWebhookConfiguration has no injected CA bundle"
-
-  ca_bundle=""
-  deadline=$((SECONDS + $(duration_seconds "$wait_timeout")))
-  log WATCH "Waiting for cert-manager CA injection into the Azure workload identity mutating webhook"
-  while ((SECONDS < deadline)); do
-    ca_bundle=$(oc get mutatingwebhookconfiguration \
-      azure-wi-webhook-mutating-webhook-configuration \
-      -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null || true)
-    [[ -n $ca_bundle ]] && break
-    sleep_until_deadline "$deadline" 2 || true
-  done
-  [[ -n $ca_bundle ]] || die "Azure workload identity MutatingWebhookConfiguration has no injected CA bundle"
+  wait_for_admission_ca_bundle validatingwebhookconfiguration \
+    azure-workload-identity-operator-validating-webhook-configuration \
+    "the operator validating webhooks"
+  wait_for_admission_ca_bundle mutatingwebhookconfiguration \
+    azure-wi-webhook-mutating-webhook-configuration \
+    "the Azure workload identity mutating webhook"
   failure_policies=$(oc get validatingwebhookconfiguration \
     azure-workload-identity-operator-validating-webhook-configuration \
     -o jsonpath='{range .webhooks[*]}{.failurePolicy}{"\n"}{end}')
@@ -2182,15 +2123,15 @@ verify_operator_release() {
   done < <(oc get pods -n "$webhook_namespace" \
     -l 'azure-workload-identity.io/system=true' -o name | sed 's#pod/##')
 
-  log VERIFY "Helm release, cert-manager certificates, least-privilege fail-closed webhooks, and OpenShift restricted SCC are Ready"
+  log VERIFY "Helm release, OpenShift service CA certificates, least-privilege fail-closed webhooks, and restricted SCC are Ready"
 }
 
 dump_operator_diagnostics() {
   helm status "$operator_release" -n "$operator_namespace" >&2 || true
   dump_namespaced_resources "$operator_namespace"
   dump_namespaced_resources "$webhook_namespace"
-  oc get certificates.cert-manager.io,issuers.cert-manager.io -n "$operator_namespace" >&2 || true
-  oc get certificates.cert-manager.io,issuers.cert-manager.io -n "$webhook_namespace" >&2 || true
+  oc get secrets -n "$operator_namespace" >&2 || true
+  oc get secrets -n "$webhook_namespace" >&2 || true
   oc describe pods -n "$operator_namespace" >&2 || true
   oc describe pods -n "$webhook_namespace" >&2 || true
   oc logs -n "$operator_namespace" deployment/azure-workload-identity-operator-controller-manager \
@@ -3697,8 +3638,6 @@ elif [[ -n $operator_image_repository || -n $operator_image_digest || -n $operat
 fi
 assert_shared_resource_group_absent
 assert_key_vault_resource_group_absent
-install_cert_manager_dependency
-
 begin_step 2
 if [[ -n $operator_candidate_run_id ]]; then
   ensure_operator_namespace

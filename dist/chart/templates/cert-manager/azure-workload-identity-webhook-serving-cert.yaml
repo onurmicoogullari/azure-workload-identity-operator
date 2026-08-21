@@ -1,4 +1,4 @@
-{{- if .Values.azureWorkloadIdentityWebhook.enabled }}
+{{- if and .Values.azureWorkloadIdentityWebhook.enabled (eq .Values.global.webhookCertificates.provider "certManager") }}
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -13,7 +13,7 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ .Values.azureWorkloadIdentityWebhook.certManagerCertificateName }}
+  name: azure-wi-webhook-serving-cert
   namespace: {{ .Values.azureWorkloadIdentityWebhook.namespaceOverride }}
   labels:
     {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
@@ -30,5 +30,5 @@ spec:
     name: azure-wi-webhook-selfsigned-issuer
   privateKey:
     rotationPolicy: Always
-  secretName: azure-wi-webhook-server-cert
+  secretName: {{ .Values.global.webhookCertificates.certManager.azureWorkloadIdentity.secretName }}
 {{- end }}

@@ -29,7 +29,7 @@ kubectl logs \
 | --- | --- | --- |
 | `CreateContainerConfigError` | Referenced Azure credential Secret and its three keys | Create or repair the externally managed Secret. The existing Pod starts automatically. |
 | Startup scope validation error | Mounted startup ConfigMap versus Helm Azure values | Restore the original scope values. Treat an intended change as a migration. |
-| Webhook certificate mount missing | cert-manager Certificate and Secret | Repair cert-manager and wait for certificate readiness. |
+| Webhook certificate mount missing | Selected provider and configured Secret in the webhook's namespace | Repair the cert-manager Certificate, self-managed TLS Secret, or OpenShift Service annotation for that webhook. |
 | Azure credential error | Service Principal validity, workload identity injection, tenant | Repair the active `DefaultAzureCredential` path. |
 
 ## `OIDCIssuer` is not Ready
@@ -70,7 +70,7 @@ Verify:
 
 1. the Pod has `azure.workload.identity/use: "true"`;
 2. `spec.serviceAccountName` names the reconciled ServiceAccount;
-3. the mutating webhook Pods and Certificate are Ready;
+3. the mutating webhook Pods and selected certificate provider are Ready;
 4. the `MutatingWebhookConfiguration` has a CA bundle; and
 5. namespace selectors do not exclude the application namespace.
 

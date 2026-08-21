@@ -43,7 +43,8 @@ The target refuses a dirty or different worktree, downloads and verifies the can
 CRC is regression coverage but does not satisfy the OpenShift 4.22.8 production gate. On the target environment, record:
 
 - commit, chart checksum, and both platform image digests;
-- OpenShift, cert-manager, optional OpenTelemetry, and Argo CD versions;
+- OpenShift, selected webhook certificate provider, optional cert-manager,
+  OpenTelemetry, and Argo CD versions;
 - selected security context constraint;
 - first install, same-scope upgrade, Pod restart, and admission health;
 - changed-scope rejection with old replicas remaining Ready;

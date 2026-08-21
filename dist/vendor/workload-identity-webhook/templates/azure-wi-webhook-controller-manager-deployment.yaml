@@ -52,9 +52,7 @@ spec:
             - --log-level={{ .Values.logLevel }}
             - --metrics-addr={{ .Values.metricsAddr }}
             - --metrics-backend={{ .Values.metricsBackend }}
-            {{- if .Values.disableCertRotation }}
             - --disable-cert-rotation=true
-            {{- end }}
             {{- if .Values.customTokenEndpoint.annotationSuffix }}
             - --custom-token-endpoint-annotation-suffix={{ .Values.customTokenEndpoint.annotationSuffix }}
             {{- end }}
@@ -107,4 +105,4 @@ spec:
         - name: cert
           secret:
             defaultMode: 420
-            secretName: azure-wi-webhook-server-cert
+            secretName: {{ include "workload-identity-webhook.certificateSecretName" . }}

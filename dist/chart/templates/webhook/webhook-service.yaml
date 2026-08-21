@@ -1,10 +1,15 @@
 apiVersion: v1
 kind: Service
+{{- $certificates := .Values.global.webhookCertificates }}
 metadata:
   labels:
     {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
   name: azure-workload-identity-operator-webhook-service
   namespace: {{ .Release.Namespace }}
+  {{- if eq $certificates.provider "openShiftServiceCA" }}
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: {{ $certificates.openShiftServiceCA.operator.secretName | quote }}
+  {{- end }}
 spec:
   ports:
   - port: 443

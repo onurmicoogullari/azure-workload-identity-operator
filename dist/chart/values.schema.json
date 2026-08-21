@@ -1,15 +1,103 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
+  "definitions": {
+    "webhookCertificateSecretName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+    },
+    "requiredWebhookCertificateCABundle": {
+      "type": "string",
+      "minLength": 1
+    },
+    "webhookCertificateSecret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "secretName"
+      ],
+      "properties": {
+        "secretName": {
+          "$ref": "#/definitions/webhookCertificateSecretName"
+        }
+      }
+    },
+    "webhookCertificateTargets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operator",
+        "azureWorkloadIdentity"
+      ],
+      "properties": {
+        "operator": {
+          "$ref": "#/definitions/webhookCertificateSecret"
+        },
+        "azureWorkloadIdentity": {
+          "$ref": "#/definitions/webhookCertificateSecret"
+        }
+      }
+    },
+    "selfManagedWebhookCertificate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "secretName",
+        "caBundle"
+      ],
+      "properties": {
+        "secretName": {
+          "type": "string"
+        },
+        "caBundle": {
+          "type": "string"
+        }
+      }
+    },
+    "requiredSelfManagedWebhookCertificate": {
+      "type": "object",
+      "required": [
+        "secretName",
+        "caBundle"
+      ],
+      "properties": {
+        "secretName": {
+          "$ref": "#/definitions/webhookCertificateSecretName"
+        },
+        "caBundle": {
+          "$ref": "#/definitions/requiredWebhookCertificateCABundle"
+        }
+      }
+    },
+    "selfManagedWebhookCertificateTargets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operator",
+        "azureWorkloadIdentity"
+      ],
+      "properties": {
+        "operator": {
+          "$ref": "#/definitions/selfManagedWebhookCertificate"
+        },
+        "azureWorkloadIdentity": {
+          "$ref": "#/definitions/selfManagedWebhookCertificate"
+        }
+      }
+    }
+  },
   "required": [
     "azure",
     "manager",
     "telemetry",
     "serviceAccount",
-    "webhook",
+    "global",
     "azureWorkloadIdentityWebhook"
   ],
   "properties": {
+    "webhook": false,
     "azure": {
       "type": "object",
       "required": [
@@ -315,54 +403,39 @@
         }
       ]
     },
-    "webhook": {
+    "global": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "certificates"
+        "webhookCertificates"
       ],
       "properties": {
-        "certificates": {
+        "webhookCertificates": {
           "type": "object",
+          "additionalProperties": false,
           "required": [
             "provider",
             "certManager",
-            "existingSecret"
+            "openShiftServiceCA",
+            "selfManaged"
           ],
           "properties": {
             "provider": {
               "type": "string",
               "enum": [
                 "certManager",
-                "existingSecret"
+                "openShiftServiceCA",
+                "selfManaged"
               ]
             },
             "certManager": {
-              "type": "object",
-              "required": [
-                "secretName"
-              ],
-              "properties": {
-                "secretName": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              }
+              "$ref": "#/definitions/webhookCertificateTargets"
             },
-            "existingSecret": {
-              "type": "object",
-              "required": [
-                "name",
-                "caBundle"
-              ],
-              "properties": {
-                "name": {
-                  "type": "string"
-                },
-                "caBundle": {
-                  "type": "string"
-                }
-              }
+            "openShiftServiceCA": {
+              "$ref": "#/definitions/webhookCertificateTargets"
+            },
+            "selfManaged": {
+              "$ref": "#/definitions/selfManagedWebhookCertificateTargets"
             }
           },
           "allOf": [
@@ -370,19 +443,16 @@
               "if": {
                 "properties": {
                   "provider": {
-                    "const": "existingSecret"
+                    "const": "selfManaged"
                   }
                 }
               },
               "then": {
                 "properties": {
-                  "existingSecret": {
+                  "selfManaged": {
                     "properties": {
-                      "name": {
-                        "minLength": 1
-                      },
-                      "caBundle": {
-                        "minLength": 1
+                      "operator": {
+                        "$ref": "#/definitions/requiredSelfManagedWebhookCertificate"
                       }
                     }
                   }
@@ -399,8 +469,6 @@
         "enabled",
         "replicaCount",
         "namespaceOverride",
-        "disableCertRotation",
-        "certManagerCertificateName",
         "podDisruptionBudget",
         "service"
       ],
@@ -416,14 +484,9 @@
           "type": "string",
           "const": "microsoft-azure-workload-identity-webhook-system"
         },
-        "disableCertRotation": {
-          "type": "boolean",
-          "const": true
-        },
-        "certManagerCertificateName": {
-          "type": "string",
-          "const": "azure-wi-webhook-serving-cert"
-        },
+        "disableCertRotation": false,
+        "certManagerCertificateName": false,
+        "certificates": false,
         "podDisruptionBudget": {
           "type": "object",
           "required": [
@@ -482,6 +545,49 @@
             "properties": {
               "tenantId": {
                 "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "azureWorkloadIdentityWebhook": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "global": {
+            "properties": {
+              "webhookCertificates": {
+                "properties": {
+                  "provider": {
+                    "const": "selfManaged"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "global": {
+            "properties": {
+              "webhookCertificates": {
+                "properties": {
+                  "selfManaged": {
+                    "properties": {
+                      "azureWorkloadIdentity": {
+                        "$ref": "#/definitions/requiredSelfManagedWebhookCertificate"
+                      }
+                    }
+                  }
+                }
               }
             }
           }

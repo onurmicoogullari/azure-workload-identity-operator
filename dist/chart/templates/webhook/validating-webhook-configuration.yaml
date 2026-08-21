@@ -1,20 +1,24 @@
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
+{{- $certificates := .Values.global.webhookCertificates }}
 metadata:
   name: azure-workload-identity-operator-validating-webhook-configuration
   labels:
     {{- include "azure-workload-identity-operator.labels" . | nindent 4 }}
-  {{- if eq .Values.webhook.certificates.provider "certManager" }}
+  {{- if eq $certificates.provider "certManager" }}
   annotations:
     cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/azure-workload-identity-operator-serving-cert
+  {{- else if eq $certificates.provider "openShiftServiceCA" }}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
   {{- end }}
 webhooks:
   - name: voidcissuer-v1alpha1.workloadidentity.azure.micosolutions.se
     admissionReviewVersions:
       - v1
     clientConfig:
-      {{- if eq .Values.webhook.certificates.provider "existingSecret" }}
-      caBundle: {{ required "webhook.certificates.existingSecret.caBundle is required for existingSecret" .Values.webhook.certificates.existingSecret.caBundle | b64enc }}
+      {{- if eq $certificates.provider "selfManaged" }}
+      caBundle: {{ required "global.webhookCertificates.selfManaged.operator.caBundle is required for selfManaged" $certificates.selfManaged.operator.caBundle | b64enc }}
       {{- end }}
       service:
         name: azure-workload-identity-operator-webhook-service
@@ -38,8 +42,8 @@ webhooks:
     admissionReviewVersions:
       - v1
     clientConfig:
-      {{- if eq .Values.webhook.certificates.provider "existingSecret" }}
-      caBundle: {{ .Values.webhook.certificates.existingSecret.caBundle | b64enc }}
+      {{- if eq $certificates.provider "selfManaged" }}
+      caBundle: {{ $certificates.selfManaged.operator.caBundle | b64enc }}
       {{- end }}
       service:
         name: azure-workload-identity-operator-webhook-service
@@ -62,8 +66,8 @@ webhooks:
     admissionReviewVersions:
       - v1
     clientConfig:
-      {{- if eq .Values.webhook.certificates.provider "existingSecret" }}
-      caBundle: {{ .Values.webhook.certificates.existingSecret.caBundle | b64enc }}
+      {{- if eq $certificates.provider "selfManaged" }}
+      caBundle: {{ $certificates.selfManaged.operator.caBundle | b64enc }}
       {{- end }}
       service:
         name: azure-workload-identity-operator-webhook-service

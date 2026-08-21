@@ -1,7 +1,18 @@
 replicaCount: 2
 namespaceOverride: ""
-disableCertRotation: false
-certManagerCertificateName: ""
+global:
+  webhookCertificates:
+    provider: certManager
+    certManager:
+      azureWorkloadIdentity:
+        secretName: azure-wi-webhook-server-cert
+    openShiftServiceCA:
+      azureWorkloadIdentity:
+        secretName: azure-wi-webhook-server-cert-openshift
+    selfManaged:
+      azureWorkloadIdentity:
+        secretName: ""
+        caBundle: ""
 image:
   repository: mcr.microsoft.com/oss/v2/azure/workload-identity/webhook
   release: v1.6.0

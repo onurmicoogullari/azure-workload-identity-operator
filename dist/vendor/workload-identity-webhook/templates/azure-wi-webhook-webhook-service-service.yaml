@@ -4,6 +4,7 @@
 {{- end }}
 apiVersion: v1
 kind: Service
+{{- $certificates := .Values.global.webhookCertificates }}
 metadata:
   name: azure-wi-webhook-webhook-service
   namespace: {{ include "workload-identity-webhook.namespace" . }}
@@ -12,6 +13,10 @@ metadata:
     azure-workload-identity.io/system: "true"
     chart: {{ include "workload-identity-webhook.name" . | quote }}
     release: {{ .Release.Name | quote }}
+  {{- if eq $certificates.provider "openShiftServiceCA" }}
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: {{ $certificates.openShiftServiceCA.azureWorkloadIdentity.secretName | quote }}
+  {{- end }}
 spec:
   type: {{ $service.type | default "ClusterIP" }}
   ports:
