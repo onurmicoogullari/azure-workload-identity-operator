@@ -11,6 +11,64 @@ Separate the operator's platform permissions from each application's Azure autho
 
 The startup flags and Helm values define one subscription, resource group, and location shared by issuer storage and workload managed identities.
 
+### Choose a bootstrap model
+
+The operator does not create Azure role assignments. An administrator must
+grant all management-plane and data-plane access before reconciliation needs
+it. `User Access Administrator` would not enable self-bootstrap because the
+operator does not call Azure RBAC APIs.
+
+#### Pre-created resource group (recommended)
+
+Before installation, create a dedicated resource group. Do not pre-create its
+Storage account or managed identities; the operator creates and manages those
+resources.
+
+Assign the operator Service Principal:
+
+| Role | Scope | Why the operator needs it |
+| --- | --- | --- |
+| [`Contributor`](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/privileged#contributor) | Dedicated resource group | Creates, reads, updates, and conditionally deletes Storage accounts and user-assigned managed identities. It also manages blob containers, federated identity credentials, and ownership tags. |
+| [`Storage Blob Data Contributor`](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/storage#storage-blob-data-contributor) | Dedicated resource group | Gives the future operator-created Storage account inherited blob access for uploading the public OIDC discovery and JSON Web Key Set (JWKS) documents. |
+
+This is the recommended model because both roles are limited to one dedicated
+resource group while the operator retains full lifecycle management of every
+child resource. `Storage Blob Data Contributor` applies to every Storage
+account in the group, so do not place unrelated Storage accounts there.
+
+#### Operator-created resource group
+
+If the resource group and Storage account do not exist, the Service Principal
+needs [`Contributor`](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/privileged#contributor)
+at subscription scope so the operator can create the group and its resources.
+
+For an unattended first reconciliation, it also needs
+[`Storage Blob Data Contributor`](https://learn.microsoft.com/azure/role-based-access-control/built-in-roles/storage#storage-blob-data-contributor)
+at subscription scope so the future Storage account inherits blob write access.
+This grants the Service Principal blob data access to every Storage account in
+the subscription.
+
+To avoid subscription-wide blob data access, use a staged bootstrap: grant the
+management role, create `OIDCIssuer`, wait for the operator to create the
+Storage account, then have an administrator assign `Storage Blob Data
+Contributor` on that account. The issuer remains not Ready until the role
+assignment becomes effective and then resumes reconciliation automatically.
+
+The operator still never needs `Owner`, `User Access Administrator`, or another
+role that can create role assignments.
+
+#### Custom roles
+
+An equivalent custom role may replace `Contributor`, but it must cover all
+operations in the table below and must be updated when the operator gains new
+Azure behavior.
+
+The person or automation performing the one-time bootstrap needs separate
+permission to create the Service Principal and assign both roles. Those
+bootstrap permissions must not be granted to the operator Service Principal.
+
+### Implemented management operations
+
 Grant only the operations implemented by the controllers:
 
 | Azure resource | Creation, adoption, and drift repair | Destructive cleanup |
@@ -26,7 +84,16 @@ identity rather than deleting its container or federated credential child
 individually. A custom role therefore does not need blob-container delete or
 federated-credential delete actions for the current implementation.
 
-If the resource group already exists, scope child-resource permissions to that group. If the operator must create it, grant the required resource-group create/read actions at subscription scope.
+If the resource group already exists, scope child-resource permissions to that
+group. If the operator must create it, resource-group create and read actions
+must be granted at subscription scope. This management-plane access does not
+authorize blob uploads. Unless `Storage Blob Data Contributor` is already
+inherited from subscription scope, the operator creates the resource group and
+Storage account but `OIDCIssuer` remains `Ready=False` when publication reaches
+the blob data plane. An administrator must then assign the role to the Service
+Principal on the new Storage account or blob container. Reconciliation resumes
+automatically after the assignment becomes effective; the manager itself does
+not stop.
 
 The operator never tags, transfers, or deletes the shared resource group.
 
@@ -39,29 +106,13 @@ The operator uploads:
 openid/v1/jwks
 ```
 
-Grant a data-plane role such as `Storage Blob Data Contributor` at the narrowest
-usable scope. Managed Storage accounts disable shared-key access; uploads use
-Microsoft Entra ID.
+Grant `Storage Blob Data Contributor` at the narrowest usable scope. Managed
+Storage accounts disable shared-key access; uploads use Microsoft Entra ID.
 
-### Bootstrap the data-plane role
-
-The account or container does not exist before the first issuer reconciliation,
-so an account-scoped role assignment requires a staged bootstrap. Choose one
-of these approaches:
-
-1. **Inherited bootstrap:** assign the data-plane role at the dedicated resource
-   group before creating `OIDCIssuer`. The future Storage account inherits it.
-   This is simpler but grants data access to every Storage account in that
-   resource group.
-2. **Staged narrow scope:** grant only management-plane permissions, create
-   `OIDCIssuer`, wait for the operator to create the Storage account, assign the
-   data-plane role to the operator principal at that account or container, then
-   wait for `Ready=True`. The issuer can remain not Ready while the role is
-   absent or propagating; reconciliation resumes without recreating it.
-
-The OpenShift end-to-end acceptance flow uses the staged account-scoped path.
-The administrator performing the role assignment needs Azure authorization to
-create role assignments; the in-cluster operator identity does not.
+The OpenShift end-to-end acceptance flow assigns this role at account scope
+after the operator creates the account. The administrator performing the role
+assignment needs Azure authorization to create role assignments; the
+in-cluster operator identity does not.
 
 ## Credential bootstrap
 
