@@ -323,4 +323,6 @@ Changing Azure scope is a migration, not an in-place upgrade. See [Ownership and
 
 ## Next step
 
-Follow the [quickstart](./quickstart.md) to publish an issuer and create a workload identity.
+Continue with [Configure and test workload identity](./quickstart.md) to publish
+an issuer, create a workload identity, and verify Azure token exchange from a
+Pod.

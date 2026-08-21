@@ -1,11 +1,17 @@
 ---
-title: Quickstart
+title: Configure and test workload identity
 description: Publish the cluster issuer, create a workload identity, and run a Pod with federated Azure authentication.
 ---
 
-# Quickstart
+# Configure and test workload identity
 
 This guide creates the minimum operator resources needed for a workload to exchange a projected Kubernetes service-account token for an Azure access token.
+
+## Before you begin
+
+Complete [Installation](./installation.md) and verify that the operator and both
+admission webhooks are running. This guide assumes that the operator already has
+working Azure credentials and the [required permissions](../operations/permissions.md).
 
 ## 1. Make the signing key available
 
