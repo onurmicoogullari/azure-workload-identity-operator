@@ -18,7 +18,7 @@ You need:
 - a certificate provider for both admission webhooks: cert-manager, externally
   supplied TLS Secrets, or the OpenShift service CA operator;
 - an Azure tenant, subscription, resource group name, and location;
-- an Azure identity with the [required permissions](../operations/permissions.md); and
+- a Microsoft Entra Service Principal prepared using one of the [supported Azure permission models](../operations/permissions.md); and
 - an external mechanism that creates a Kubernetes Secret containing the operator's Azure client ID, tenant ID, and client secret. You will configure the Secret name and all three data keys explicitly.
 
 :::note Platform support
@@ -194,6 +194,29 @@ the webhook reloads the mounted key pair. For a CA change, follow the
 [safe CA rollover procedure](../guides/upgrades-and-uninstall.md#rotate-a-self-managed-webhook-ca).
 See [Helm values](../reference/helm-values.md#webhook-certificate-providers)
 for every setting and default.
+
+## Prepare the Azure Service Principal
+
+Create a Service Principal for the operator through your organization's normal
+Azure provisioning process. The operator does not create Azure role
+assignments and cannot grant data access to itself.
+
+Choose one bootstrap model:
+
+| Model | Resources created before installation | Service Principal access |
+| --- | --- |
+| **Pre-created resource group (recommended)** | A dedicated resource group | `Contributor` and `Storage Blob Data Contributor` on the dedicated resource group |
+| **Operator-created resource group** | None | `Contributor` and `Storage Blob Data Contributor` at subscription scope for an unattended bootstrap |
+
+The recommended model limits both roles to one dedicated resource group. The
+operator creates and manages the Storage account, blob container, managed
+identities, and federated credentials inside that group.
+
+The Service Principal does not need `Owner`, `User Access Administrator`, or
+permission to create role assignments in either model. Record its application
+(client) ID, tenant ID, and client secret for the credential Secret. See
+[Permissions](../operations/permissions.md) for detailed operations and a
+staged alternative to subscription-wide blob data access.
 
 ## Install the published chart
 
