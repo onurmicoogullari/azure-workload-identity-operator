@@ -30,10 +30,13 @@ azure-workload-identity-operator-controller-manager
 {{- end }}
 
 {{- define "azure-workload-identity-operator.webhookSecretName" -}}
-{{- if eq .Values.webhook.certificates.provider "existingSecret" -}}
-{{- required "webhook.certificates.existingSecret.name is required for existingSecret" .Values.webhook.certificates.existingSecret.name -}}
+{{- $certificates := .Values.global.webhookCertificates -}}
+{{- if eq $certificates.provider "selfManaged" -}}
+{{- required "global.webhookCertificates.selfManaged.operator.secretName is required for selfManaged" $certificates.selfManaged.operator.secretName -}}
+{{- else if eq $certificates.provider "openShiftServiceCA" -}}
+{{- $certificates.openShiftServiceCA.operator.secretName -}}
 {{- else -}}
-{{- .Values.webhook.certificates.certManager.secretName -}}
+{{- $certificates.certManager.operator.secretName -}}
 {{- end -}}
 {{- end }}
 

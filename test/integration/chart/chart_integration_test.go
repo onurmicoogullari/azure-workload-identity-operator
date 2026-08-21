@@ -3,6 +3,7 @@
 package chart_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -150,16 +151,10 @@ func TestHelmChartLifecycle(t *testing.T) {
 		runner.run(t, "kubectl", "wait", "certificate/azure-wi-webhook-serving-cert",
 			"--namespace", webhookNamespace, "--for=condition=Ready", "--timeout=5m")
 
-		eventually(t, 2*time.Minute, "operator validating webhook CA injection", func() (bool, string) {
-			ca, err := runner.result("kubectl", "get", "validatingwebhookconfiguration", validatingWebhook,
-				"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
-			return err == nil && strings.TrimSpace(ca) != "", ca
-		})
-		eventually(t, 2*time.Minute, "Azure mutating webhook CA injection", func() (bool, string) {
-			ca, err := runner.result("kubectl", "get", "mutatingwebhookconfiguration", mutatingWebhook,
-				"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
-			return err == nil && strings.TrimSpace(ca) != "", ca
-		})
+		assertWebhookCABundle(t, runner, 2*time.Minute,
+			"validatingwebhookconfiguration", validatingWebhook, "operator validating webhook CA injection")
+		assertWebhookCABundle(t, runner, 2*time.Minute,
+			"mutatingwebhookconfiguration", mutatingWebhook, "Azure mutating webhook CA injection")
 
 		webhookServiceAccount := "system:serviceaccount:" + webhookNamespace + ":azure-wi-webhook-admin"
 		assertCanI(t, runner, "no", webhookServiceAccount, "get", "secrets", "--namespace", webhookNamespace)
@@ -209,6 +204,63 @@ func TestHelmChartLifecycle(t *testing.T) {
 			output, commandErr := runner.result("kubectl", "apply", "--server-side", "--dry-run=server",
 				"-o", "yaml", "-f", probePath)
 			return commandErr == nil && strings.Contains(output, "AZURE_FEDERATED_TOKEN_FILE"), output
+		})
+	})
+
+	stage(t, "switch both webhooks to self-managed certificates", func(t *testing.T) {
+		operatorCAPath := copyTLSSecret(t, runner,
+			"webhook-server-cert", operatorNamespace, "operator-self-managed-webhook-cert")
+		mutatingCAPath := copyTLSSecret(t, runner,
+			"azure-wi-webhook-server-cert", webhookNamespace, "azure-wi-self-managed-webhook-cert")
+
+		runner.run(t, "helm", "upgrade", operatorRelease, chartPath,
+			"--namespace", operatorNamespace,
+			"--reuse-values",
+			"--force-conflicts",
+			setString, "global.webhookCertificates.provider=selfManaged",
+			setString, "global.webhookCertificates.selfManaged.operator.secretName=operator-self-managed-webhook-cert",
+			"--set-file", "global.webhookCertificates.selfManaged.operator.caBundle="+operatorCAPath,
+			setString, "global.webhookCertificates.selfManaged.azureWorkloadIdentity.secretName=azure-wi-self-managed-webhook-cert",
+			"--set-file", "global.webhookCertificates.selfManaged.azureWorkloadIdentity.caBundle="+mutatingCAPath,
+			"--wait", "--timeout", "5m")
+
+		assertAbsent(t, runner, "certificate", "azure-workload-identity-operator-serving-cert",
+			"--namespace", operatorNamespace)
+		assertAbsent(t, runner, "certificate", "azure-wi-webhook-serving-cert",
+			"--namespace", webhookNamespace)
+		assertAbsent(t, runner, "issuer", "azure-workload-identity-operator-selfsigned-issuer",
+			"--namespace", operatorNamespace)
+		assertAbsent(t, runner, "issuer", "azure-wi-webhook-selfsigned-issuer",
+			"--namespace", webhookNamespace)
+
+		for _, webhook := range []struct {
+			kind string
+			name string
+		}{
+			{kind: "validatingwebhookconfiguration", name: validatingWebhook},
+			{kind: "mutatingwebhookconfiguration", name: mutatingWebhook},
+		} {
+			assertWebhookCABundle(t, runner, time.Minute,
+				webhook.kind, webhook.name, webhook.name+" self-managed CA bundle")
+			configuration := runner.run(t, "kubectl", "get", webhook.kind, webhook.name, "-o", "json")
+			if strings.Contains(configuration, "cert-manager.io/inject-ca-from") ||
+				strings.Contains(configuration, "service.beta.openshift.io/inject-cabundle") {
+				t.Fatalf("%s still delegates CA injection in selfManaged mode:\n%s", webhook.name, configuration)
+			}
+		}
+
+		probePath := writeTempFile(t, "self-managed-mutation-probe.yaml", mutationProbeManifest)
+		eventually(t, 2*time.Minute, "self-managed-certificate mutating admission", func() (bool, string) {
+			output, commandErr := runner.result("kubectl", "apply", "--server-side", "--dry-run=server",
+				"-o", "yaml", "-f", probePath)
+			return commandErr == nil && strings.Contains(output, "AZURE_FEDERATED_TOKEN_FILE"), output
+		})
+
+		workloadIdentityPath := writeTempFile(t, "self-managed-validating-probe.yaml", workloadIdentityManifest)
+		eventually(t, 2*time.Minute, "self-managed-certificate validating admission", func() (bool, string) {
+			output, commandErr := runner.result("kubectl", "apply", "--server-side", "--dry-run=server",
+				"-f", workloadIdentityPath)
+			return commandErr == nil, output
 		})
 	})
 
@@ -339,6 +391,43 @@ func credentialValues() []string {
 		setString, "azure.credentials.secretRef.keys.tenantId=AZURE_TENANT_ID",
 		setString, "azure.credentials.secretRef.keys.clientSecret=AZURE_CLIENT_SECRET",
 	}
+}
+
+func assertWebhookCABundle(
+	t *testing.T,
+	runner commandRunner,
+	timeout time.Duration,
+	kind, name, description string,
+) {
+	t.Helper()
+	eventually(t, timeout, description, func() (bool, string) {
+		ca, err := runner.result("kubectl", "get", kind, name,
+			"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
+		return err == nil && strings.TrimSpace(ca) != "", ca
+	})
+}
+
+func copyTLSSecret(t *testing.T, runner commandRunner, source, namespace, destination string) string {
+	t.Helper()
+	tempDir := t.TempDir()
+	certPath := filepath.Join(tempDir, "tls.crt")
+	keyPath := filepath.Join(tempDir, "tls.key")
+
+	for dataKey, path := range map[string]string{"tls.crt": certPath, "tls.key": keyPath} {
+		encoded := runner.run(t, "kubectl", "get", "secret", source,
+			"--namespace", namespace, "-o", "jsonpath={.data."+strings.ReplaceAll(dataKey, ".", "\\.")+"}")
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+		if err != nil {
+			t.Fatalf("decode %s from Secret/%s: %v", dataKey, source, err)
+		}
+		if err := os.WriteFile(path, decoded, 0o600); err != nil {
+			t.Fatalf("write copied %s: %v", dataKey, err)
+		}
+	}
+
+	runner.run(t, "kubectl", "create", "secret", "tls", destination,
+		"--namespace", namespace, "--cert", certPath, "--key", keyPath)
+	return certPath
 }
 
 func changedScopePodFailed(runner commandRunner) (bool, string) {

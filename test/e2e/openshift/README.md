@@ -157,9 +157,8 @@ take precedence.
 
 The numbered script flow is:
 
-1. Create the ephemeral operator identity (or validate the supplied fallback),
-   verify test Azure groups are absent, and install pinned cert-manager when the
-   cluster does not already own it.
+1. Create the ephemeral operator identity (or validate the supplied fallback)
+   and verify test Azure groups are absent.
 2. Build an allowlisted source context through OpenShift and push the image to
    the internal registry via `BuildConfig`/`ImageStream`, or use an explicitly
    supplied release-candidate chart archive and its embedded digest. The
@@ -168,10 +167,10 @@ The numbered script flow is:
 3. Install the first-party chart with the required Azure scope and an existing
    credentials Secret. This also installs the bundled Microsoft Azure Workload
    Identity mutating webhook.
-4. Verify both deployments in their separate namespaces, both cert-manager
-   Certificates, both injected CA bundles, three `failurePolicy: Fail`
-   validating webhooks, least-privilege mutating-webhook RBAC, and restricted
-   SCC admission without any fixed UID/GID patch.
+4. Verify both deployments in their separate namespaces, both OpenShift
+   service CA serving Secrets and annotations, both injected CA bundles, three
+   `failurePolicy: Fail` validating webhooks, least-privilege mutating-webhook
+   RBAC, and restricted SCC admission without any fixed UID/GID patch.
 5. Create the workload test namespace.
 6. Create `OIDCIssuer/default` through real API-server admission.
 7. Grant the operator Service Principal blob data access to published OIDC
@@ -214,10 +213,9 @@ operator process. Its admission assertions exercise the chart-installed
 The exit trap deletes CRs before uninstalling the chart so Azure finalizers can
 run. It then verifies Helm retained the operator CRDs, explicitly deletes those
 test-owned CRDs, removes the operator credentials Secret, OpenShift build
-artifacts, operator release/namespace, and test Azure groups. If this run
-installed cert-manager into an otherwise clean cluster, it also removes that
-release, its retained CRDs, and namespace. Pre-existing cert-manager resources
-are reused and retained.
+artifacts, operator release/namespace, and test Azure groups. The OpenShift
+service CA operator owns and rotates the two serving Secrets; this test does
+not install, adopt, or remove cert-manager.
 
 When the run created the operator identity, cleanup also deletes every tracked
 role assignment and the ephemeral Entra application (which removes its home

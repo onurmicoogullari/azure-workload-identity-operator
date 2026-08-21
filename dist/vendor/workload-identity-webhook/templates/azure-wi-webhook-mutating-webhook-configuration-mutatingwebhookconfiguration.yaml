@@ -1,14 +1,20 @@
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
+{{- $certificates := .Values.global.webhookCertificates }}
+{{- $userAnnotations := omit .Values.mutatingWebhookAnnotations "cert-manager.io/inject-ca-from" "service.beta.openshift.io/inject-cabundle" }}
 metadata:
   name: azure-wi-webhook-mutating-webhook-configuration
+  {{- if or (eq $certificates.provider "certManager") (eq $certificates.provider "openShiftServiceCA") $userAnnotations }}
   annotations:
-    {{ if .Values.disableCertRotation -}}
-    cert-manager.io/inject-ca-from: {{ printf "%s/%s" (include "workload-identity-webhook.namespace" .) .Values.certManagerCertificateName | quote }}
+    {{ if eq $certificates.provider "certManager" -}}
+    cert-manager.io/inject-ca-from: {{ printf "%s/%s" (include "workload-identity-webhook.namespace" .) "azure-wi-webhook-serving-cert" | quote }}
+    {{- else if eq $certificates.provider "openShiftServiceCA" }}
+    service.beta.openshift.io/inject-cabundle: "true"
     {{- end }}
-    {{- with omit .Values.mutatingWebhookAnnotations "cert-manager.io/inject-ca-from" }}
+    {{- with $userAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+  {{- end }}
   labels:
     app: {{ include "workload-identity-webhook.name" . | quote }}
     azure-workload-identity.io/system: "true"
@@ -20,6 +26,9 @@ webhooks:
       - v1
       - v1beta1
     clientConfig:
+      {{- if eq $certificates.provider "selfManaged" }}
+      caBundle: {{ required "global.webhookCertificates.selfManaged.azureWorkloadIdentity.caBundle is required for selfManaged" $certificates.selfManaged.azureWorkloadIdentity.caBundle | b64enc }}
+      {{- end }}
       service:
         name: azure-wi-webhook-webhook-service
         namespace: {{ include "workload-identity-webhook.namespace" . }}

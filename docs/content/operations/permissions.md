@@ -109,7 +109,12 @@ Grant a write-capable recovery role only to administrators authorized to transfe
 
 ## Bundled webhook permissions
 
-The bundled mutating webhook has cluster-wide `get`, `list`, and `watch` on ServiceAccounts. It has no Secret permissions and cannot update `MutatingWebhookConfiguration` objects. cert-manager owns its serving Secret and CA injection.
+The bundled mutating webhook has cluster-wide `get`, `list`, and `watch` on
+ServiceAccounts. It has no Secret permissions and cannot update
+`MutatingWebhookConfiguration` objects. Certificate and CA ownership belongs
+to the selected cert-manager, self-managed-certificate, or OpenShift service
+CA path;
+the webhook process does not rotate certificates itself.
 
 ## Application permissions
 

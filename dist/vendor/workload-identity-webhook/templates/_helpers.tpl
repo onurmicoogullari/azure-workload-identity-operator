@@ -13,3 +13,14 @@ workload-identity-webhook
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{- define "workload-identity-webhook.certificateSecretName" -}}
+{{- $certificates := .Values.global.webhookCertificates -}}
+{{- if eq $certificates.provider "selfManaged" -}}
+{{- required "global.webhookCertificates.selfManaged.azureWorkloadIdentity.secretName is required for selfManaged" $certificates.selfManaged.azureWorkloadIdentity.secretName -}}
+{{- else if eq $certificates.provider "openShiftServiceCA" -}}
+{{- $certificates.openShiftServiceCA.azureWorkloadIdentity.secretName -}}
+{{- else -}}
+{{- $certificates.certManager.azureWorkloadIdentity.secretName -}}
+{{- end -}}
+{{- end }}

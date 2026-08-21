@@ -7,7 +7,8 @@ namespace=${HELM_NAMESPACE:-azure-workload-identity-operator-system}
 helm_binary=${HELM:-helm}
 tmpdir=$(mktemp -d)
 rendered=$tmpdir/rendered.yaml
-existing_secret_rendered=$tmpdir/existing-secret.yaml
+self_managed_rendered=$tmpdir/self-managed.yaml
+openshift_service_ca_rendered=$tmpdir/openshift-service-ca.yaml
 credential_secret_rendered=$tmpdir/credential-secret.yaml
 digest_rendered=$tmpdir/digest.yaml
 telemetry_rendered=$tmpdir/telemetry.yaml
@@ -59,6 +60,7 @@ render_and_verify_source_sync() {
     --set-string 'manager.podLabels.app\.kubernetes\.io/name=overridden' \
     --set-string azureWorkloadIdentityWebhook.podLabels.app=overridden \
     --set-string 'azureWorkloadIdentityWebhook.mutatingWebhookAnnotations.cert-manager\.io/inject-ca-from=overridden' \
+    --set-string 'azureWorkloadIdentityWebhook.mutatingWebhookAnnotations.service\.beta\.openshift\.io/inject-cabundle=overridden' \
     "${required_values[@]}" >"$rendered"
 
   "$helm_binary" template "$release_name" "$chart_dir" \
@@ -93,14 +95,18 @@ render_and_verify_source_sync() {
 
   "$helm_binary" template "$release_name" "$chart_dir" \
     --namespace custom-operator-system \
-    --set-string azure.subscriptionId=00000000-0000-0000-0000-000000000000 \
-    --set-string azure.resourceGroupName=rg-chart-test \
-    --set-string azure.location=swedencentral \
-    --set azureWorkloadIdentityWebhook.enabled=false \
-    --set-string webhook.certificates.provider=existingSecret \
-    --set-string webhook.certificates.existingSecret.name=webhook-tls \
-    --set-string 'webhook.certificates.existingSecret.caBundle=-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----' \
-    >"$existing_secret_rendered"
+    "${required_values[@]}" \
+    --set-string global.webhookCertificates.provider=selfManaged \
+    --set-string global.webhookCertificates.selfManaged.operator.secretName=webhook-tls \
+    --set-string global.webhookCertificates.selfManaged.operator.caBundle=operator-ca \
+    --set-string global.webhookCertificates.selfManaged.azureWorkloadIdentity.secretName=azure-wi-webhook-tls \
+    --set-string global.webhookCertificates.selfManaged.azureWorkloadIdentity.caBundle=mutating-ca \
+    >"$self_managed_rendered"
+
+  "$helm_binary" template "$release_name" "$chart_dir" \
+    --namespace "$namespace" \
+    --set-string global.webhookCertificates.provider=openShiftServiceCA \
+    "${required_values[@]}" >"$openshift_service_ca_rendered"
 
   release_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   "$helm_binary" template "$release_name" "$chart_dir" \
@@ -146,6 +152,30 @@ assert_template_rejected() {
 }
 
 verify_rejected_values() {
+  assert_template_rejected "chart unexpectedly accepted an unknown certificate provider" \
+    "${required_values[@]}" \
+    --set-string global.webhookCertificates.provider=automatic
+
+  assert_template_rejected "chart unexpectedly accepted the removed existingSecret certificate provider" \
+    "${required_values[@]}" \
+    --set-string global.webhookCertificates.provider=existingSecret
+
+  assert_template_rejected "chart unexpectedly accepted the removed per-webhook certificate provider" \
+    "${required_values[@]}" \
+    --set-string azureWorkloadIdentityWebhook.certificates.provider=automatic
+
+  assert_template_rejected "chart unexpectedly accepted the removed operator certificate provider" \
+    "${required_values[@]}" \
+    --set-string webhook.certificates.provider=certManager
+
+  assert_template_rejected "chart unexpectedly accepted the removed certificate-rotation override" \
+    "${required_values[@]}" \
+    --set azureWorkloadIdentityWebhook.disableCertRotation=false
+
+  assert_template_rejected "chart unexpectedly accepted the removed Certificate-name override" \
+    "${required_values[@]}" \
+    --set-string azureWorkloadIdentityWebhook.certManagerCertificateName=other-certificate
+
   assert_template_rejected "chart unexpectedly accepted an empty Azure subscription ID" \
     --set-string azure.tenantId=tenant \
     --set-string azure.subscriptionId= \
@@ -216,17 +246,28 @@ verify_rejected_values() {
     "${required_values[@]}" \
     --set-string azureWorkloadIdentityWebhook.namespaceOverride=other-system
 
-  assert_template_rejected "chart unexpectedly enabled the privileged upstream certificate rotator" \
-    --skip-schema-validation \
-    "${required_values[@]}" \
-    --set azureWorkloadIdentityWebhook.disableCertRotation=false
-
-  assert_template_rejected "chart unexpectedly accepted an incomplete existing TLS Secret configuration" \
+  assert_template_rejected "chart unexpectedly accepted incomplete self-managed operator certificate configuration" \
     --set-string azure.subscriptionId=subscription \
     --set-string azure.resourceGroupName=rg \
     --set-string azure.location=location \
     --set azureWorkloadIdentityWebhook.enabled=false \
-    --set-string webhook.certificates.provider=existingSecret
+    --set-string global.webhookCertificates.provider=selfManaged
+
+  assert_template_rejected "chart unexpectedly accepted incomplete self-managed bundled webhook certificate configuration" \
+    "${required_values[@]}" \
+    --set-string global.webhookCertificates.provider=selfManaged \
+    --set-string global.webhookCertificates.selfManaged.operator.secretName=webhook-tls \
+    --set-string global.webhookCertificates.selfManaged.operator.caBundle=operator-ca
+
+  assert_template_rejected "chart unexpectedly accepted an empty operator OpenShift service CA Secret name" \
+    "${required_values[@]}" \
+    --set-string global.webhookCertificates.provider=openShiftServiceCA \
+    --set-string global.webhookCertificates.openShiftServiceCA.operator.secretName=
+
+  assert_template_rejected "chart unexpectedly accepted an empty bundled webhook OpenShift service CA Secret name" \
+    "${required_values[@]}" \
+    --set-string global.webhookCertificates.provider=openShiftServiceCA \
+    --set-string global.webhookCertificates.openShiftServiceCA.azureWorkloadIdentity.secretName=
 
   assert_template_rejected "chart unexpectedly allowed replacement of a fixed manager environment variable" \
     "${required_values[@]}" \
@@ -311,7 +352,23 @@ verify_rendered_contracts() {
     exit 1
   fi
 
-  grep -Fq 'namespace: custom-operator-system' "$existing_secret_rendered"
+  grep -Fq 'namespace: custom-operator-system' "$self_managed_rendered"
+
+  for expected in \
+    'secretName: webhook-tls' \
+    'secretName: azure-wi-webhook-tls' \
+    'caBundle: b3BlcmF0b3ItY2E=' \
+    'caBundle: bXV0YXRpbmctY2E='; do
+    grep -Fq -- "$expected" "$self_managed_rendered" || {
+      echo "selfManaged chart is missing: $expected" >&2
+      exit 1
+    }
+  done
+  if grep -Eq 'cert-manager.io/inject-ca-from|service.beta.openshift.io/(inject-cabundle|serving-cert-secret-name)' \
+    "$self_managed_rendered"; then
+    echo "selfManaged mode unexpectedly delegated certificate ownership or CA injection" >&2
+    exit 1
+  fi
 
   for expected in \
     '--telemetry-tracing-enabled' \
@@ -324,12 +381,34 @@ verify_rendered_contracts() {
       exit 1
     }
   done
-  if grep -Eq '^kind: (Issuer|Certificate)$' "$existing_secret_rendered"; then
-    echo "existingSecret mode unexpectedly rendered cert-manager resources" >&2
+  if grep -Eq '^kind: (Issuer|Certificate)$' "$self_managed_rendered"; then
+    echo "selfManaged mode unexpectedly rendered cert-manager resources" >&2
     exit 1
   fi
-  if grep -Fq 'kind: MutatingWebhookConfiguration' "$existing_secret_rendered"; then
-    echo "disabling the bundled Azure webhook unexpectedly rendered it" >&2
+  if ! grep -Fq 'kind: MutatingWebhookConfiguration' "$self_managed_rendered"; then
+    echo "selfManaged mode did not render the bundled Azure webhook" >&2
+    exit 1
+  fi
+
+  for expected in \
+    'service.beta.openshift.io/serving-cert-secret-name: "webhook-server-cert-openshift"' \
+    'service.beta.openshift.io/serving-cert-secret-name: "azure-wi-webhook-server-cert-openshift"' \
+    'service.beta.openshift.io/inject-cabundle: "true"' \
+    'secretName: webhook-server-cert-openshift' \
+    'secretName: azure-wi-webhook-server-cert-openshift'; do
+    grep -Fq -- "$expected" "$openshift_service_ca_rendered" || {
+      echo "openShiftServiceCA chart is missing: $expected" >&2
+      exit 1
+    }
+  done
+  if grep -Eq '^kind: (Issuer|Certificate)$|cert-manager.io/inject-ca-from' "$openshift_service_ca_rendered"; then
+    echo "openShiftServiceCA mode unexpectedly rendered cert-manager ownership" >&2
+    exit 1
+  fi
+  openshift_inject_count=$(grep -c 'service.beta.openshift.io/inject-cabundle: "true"' \
+    "$openshift_service_ca_rendered" || true)
+  if [[ $openshift_inject_count -ne 2 ]]; then
+    echo "openShiftServiceCA mode rendered $openshift_inject_count CA injection annotations instead of 2" >&2
     exit 1
   fi
 

@@ -1,4 +1,4 @@
-{{- if eq .Values.webhook.certificates.provider "certManager" }}
+{{- if eq .Values.global.webhookCertificates.provider "certManager" }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -16,5 +16,5 @@ spec:
   issuerRef:
     kind: Issuer
     name: azure-workload-identity-operator-selfsigned-issuer
-  secretName: {{ .Values.webhook.certificates.certManager.secretName }}
+  secretName: {{ .Values.global.webhookCertificates.certManager.operator.secretName }}
 {{- end }}

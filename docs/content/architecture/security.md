@@ -45,7 +45,13 @@ Namespaced writers can request identities and ServiceAccount relationships withi
 
 All three custom resources have validating webhooks with `failurePolicy: Fail`. Validation enforces singleton naming, immutable identity fields, signing-key reference separation, global identity and ServiceAccount uniqueness, exact recovery evidence, and recovery spec immutability.
 
-Both operator and bundled mutating webhook certificates are managed by cert-manager by default. The bundled webhook cannot read Secrets or update its admission registration.
+Both webhooks use one shared provider selection: cert-manager, self-managed
+certificates delivered through Secrets, or the explicitly selected OpenShift
+service CA operator.
+Only that provider owns the serving Secrets and CA injection paths. The
+bundled webhook cannot read Secrets or update its admission registration; the
+kubelet mounts its selected Secret and the chosen controller or Helm-rendered
+CA bundle maintains API-server trust.
 
 ## Public OIDC surface
 

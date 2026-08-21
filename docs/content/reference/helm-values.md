@@ -91,14 +91,61 @@ Core controller RBAC always renders. Helper roles are not bound to users by the 
 | `metrics.secure` | `true` | Use authenticated and authorized HTTPS metrics. |
 | `telemetry.tracing.enabled` | `false` | Enable in-process OpenTelemetry tracing configured by standard environment variables. |
 
-## Validating webhook certificates
+## Webhook certificate providers
+
+One provider owns certificates for both the operator validating webhook and the
+bundled mutating webhook. Select it once with
+`global.webhookCertificates.provider`. The shared setting is in Helm's
+`global` scope because it must be visible to both the parent chart and bundled
+webhook subchart. The default is `certManager`.
+
+| Provider | Certificate resources rendered | Secret owner | Admission CA bundle owner |
+| --- | --- | --- | --- |
+| `certManager` | One Issuer and Certificate per enabled webhook | cert-manager | cert-manager CA injector |
+| `openShiftServiceCA` | None | OpenShift service CA operator | OpenShift service CA operator |
+| `selfManaged` | None | Installer or external controller | Helm embeds the configured PEM bundles |
+
+The provider choice is shared, but the `operator` and
+`azureWorkloadIdentity` settings are separate because the webhook servers use
+different certificates in different namespaces. Follow the
+[provider-specific installation guides](../getting-started/installation.md#choose-an-admission-certificate-provider)
+for prerequisites, configuration, and verification.
 
 | Value | Default | Description |
 | --- | --- | --- |
-| `webhook.certificates.provider` | `certManager` | `certManager` or `existingSecret`. |
-| `webhook.certificates.certManager.secretName` | `webhook-server-cert` | Secret populated by the chart Certificate. |
-| `webhook.certificates.existingSecret.name` | `""` | Pre-created TLS Secret for an external PKI. |
-| `webhook.certificates.existingSecret.caBundle` | `""` | PEM CA bundle embedded in the validating webhook configuration. |
+| `global.webhookCertificates.provider` | `certManager` | Shared provider for both webhooks: `certManager`, `openShiftServiceCA`, or `selfManaged`. |
+| `global.webhookCertificates.certManager.operator.secretName` | `webhook-server-cert` | Operator Secret populated by the chart Certificate. |
+| `global.webhookCertificates.certManager.azureWorkloadIdentity.secretName` | `azure-wi-webhook-server-cert` | Bundled-webhook Secret populated by the chart Certificate. |
+| `global.webhookCertificates.openShiftServiceCA.operator.secretName` | `webhook-server-cert-openshift` | Operator Secret created and rotated by the OpenShift service CA operator. |
+| `global.webhookCertificates.openShiftServiceCA.azureWorkloadIdentity.secretName` | `azure-wi-webhook-server-cert-openshift` | Bundled-webhook Secret created and rotated by the OpenShift service CA operator. |
+| `global.webhookCertificates.selfManaged.operator.secretName` | `""` | Operator TLS Secret populated and rotated outside this chart. |
+| `global.webhookCertificates.selfManaged.operator.caBundle` | `""` | PEM CA bundle embedded in the validating webhook configuration. |
+| `global.webhookCertificates.selfManaged.azureWorkloadIdentity.secretName` | `""` | Bundled-webhook TLS Secret populated and rotated outside this chart. |
+| `global.webhookCertificates.selfManaged.azureWorkloadIdentity.caBundle` | `""` | PEM CA bundle embedded in the mutating webhook configuration. |
+
+The operator serving Secret is always in the Helm release namespace. The
+bundled webhook serving Secret is always in the fixed
+`microsoft-azure-workload-identity-webhook-system` namespace.
+
+In `certManager` mode, the chart renders one namespaced Issuer and Certificate
+per enabled webhook and cert-manager injects the CA bundle. In
+`selfManaged` mode, no certificate resource is rendered: the installer owns
+issuance, rotation, Secret population, and CA bundle updates. Each referenced
+Secret must contain `tls.crt` and `tls.key`, and `caBundle` must contain the PEM
+CA that verifies that certificate. The two webhooks may use the same CA or
+different CAs. Self-managed does not mean self-signed. In
+`openShiftServiceCA` mode, the chart
+annotates each Service with
+`service.beta.openshift.io/serving-cert-secret-name` and its admission
+configuration with `service.beta.openshift.io/inject-cabundle: "true"`; no
+cert-manager resources are rendered. The OpenShift provider is never selected
+by cluster auto-detection. Do not select it on vanilla Kubernetes: the
+OpenShift annotations have no controller there, so the serving Secrets will
+not be created and the webhook Pods will remain unavailable.
+
+OpenShift 4.22 creates service serving Secrets in the annotated Service's
+namespace and stores the key pair as `tls.crt` and `tls.key`. See the official
+[OpenShift 4.22 service serving certificate documentation](https://docs.redhat.com/en/documentation/openshift_container_platform/4.22/html/security_and_compliance/configuring-certificates#add-service-serving).
 
 ## Bundled Azure Workload Identity webhook
 
@@ -120,12 +167,9 @@ Core controller RBAC always renders. Helper roles are not bound to users by the 
 | `azureWorkloadIdentityWebhook.mutatingWebhookNamespaceSelector` | `{}` | Optional namespace selector for admission. |
 | `azureWorkloadIdentityWebhook.service.type` | `ClusterIP` | Webhook Service type. |
 
-The parent chart owns the webhook tenant configuration and cert-manager certificate mode. The upstream certificate rotator is disabled.
-
-`webhook.certificates.provider: existingSecret` affects only the operator's
-validating webhook. The bundled mutating webhook continues to render its
-cert-manager `Issuer` and `Certificate` while
-`azureWorkloadIdentityWebhook.enabled` is `true`.
+The parent chart owns the webhook tenant and certificate-provider
+configuration. The upstream certificate rotator remains disabled in every
+mode, so it never competes with the selected provider.
 
 ## Availability profiles
 

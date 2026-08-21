@@ -32,7 +32,10 @@ with that cloud.
 ## Required cluster dependencies
 
 - Helm for installation or a GitOps tool capable of rendering the chart.
-- cert-manager before chart installation.
+- A certificate controller only when selected: cert-manager for
+  `certManager`, or the OpenShift service CA operator for
+  `openShiftServiceCA`. `selfManaged` has no in-cluster certificate-controller
+  dependency owned by this chart.
 - Admission registration and functioning API aggregation/webhook connectivity.
 - Network access from the manager to the Kubernetes API, Microsoft Entra ID, Azure Resource Manager, and Azure Storage.
 - Network access from applications to Microsoft Entra ID and their target Azure services.
@@ -59,7 +62,8 @@ Before using a release on a production cluster, validate the exact chart and ima
 - proxy and private trust configuration;
 - DNS and egress policies;
 - registry mirror policy;
-- cert-manager version;
+- selected webhook certificate provider and, when applicable, cert-manager or
+  OpenShift service CA operator behavior;
 - optional OpenTelemetry path; and
 - GitOps rendering and pruning behavior.
 
