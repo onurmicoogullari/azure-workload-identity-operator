@@ -87,11 +87,12 @@ var _ = Describe("WorkloadIdentity Webhook", func() {
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 			duplicate := validWebhookWorkloadIdentity(duplicateIdentityName, "other")
 			duplicate.Spec.Azure.FederatedIdentityCredentialName = otherFederatedIdentityCredentialName
+			duplicate.Spec.Azure.UserAssignedIdentityName = "other-identity"
 
 			Expect(k8sClient.Create(ctx, duplicate)).To(Succeed())
 		})
 
-		It("denies duplicate resolved user assigned identity names", func() {
+		It("denies duplicate user assigned identity names", func() {
 			identity := validWebhookWorkloadIdentity(identityName, defaultWebhookNamespace)
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 			duplicate := validWebhookWorkloadIdentity(duplicateIdentityName, defaultWebhookNamespace)
@@ -102,24 +103,24 @@ var _ = Describe("WorkloadIdentity Webhook", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(apierrors.IsInvalid(err)).To(BeTrue())
 			Expect(err.Error()).To(ContainSubstring("spec.azure.userAssignedIdentityName"))
-			Expect(err.Error()).To(ContainSubstring("resolved Azure user assigned identity name"))
+			Expect(err.Error()).To(ContainSubstring("Azure user assigned identity name"))
 		})
 
-		It("denies colliding resolved user assigned identity names across namespaces", func() {
+		It("denies duplicate user assigned identity names across namespaces", func() {
 			identity := validWebhookWorkloadIdentity(identityName, "team")
 			identity.Spec.Azure.UserAssignedIdentityName = "app-identity"
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 			duplicate := validWebhookWorkloadIdentity(duplicateIdentityName, "team-app")
-			duplicate.Spec.Azure.UserAssignedIdentityName = "identity"
+			duplicate.Spec.Azure.UserAssignedIdentityName = "app-identity"
 
 			err := k8sClient.Create(ctx, duplicate)
 
 			Expect(err).To(HaveOccurred())
 			Expect(apierrors.IsInvalid(err)).To(BeTrue())
-			Expect(err.Error()).To(ContainSubstring(`"team-app-identity"`))
+			Expect(err.Error()).To(ContainSubstring(`"app-identity"`))
 		})
 
-		It("denies duplicate resolved user assigned identity names case-insensitively", func() {
+		It("denies duplicate user assigned identity names case-insensitively", func() {
 			identity := validWebhookWorkloadIdentity(identityName, defaultWebhookNamespace)
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 			duplicate := validWebhookWorkloadIdentity(duplicateIdentityName, defaultWebhookNamespace)
@@ -143,15 +144,16 @@ var _ = Describe("WorkloadIdentity Webhook", func() {
 			Expect(k8sClient.Create(ctx, duplicate)).To(Succeed())
 		})
 
-		It("denies a suffix whose resolved identity name exceeds Azure length limits", func() {
+		It("denies a user assigned identity name that exceeds Azure length limits", func() {
 			identity := validWebhookWorkloadIdentity(identityName, defaultWebhookNamespace)
-			identity.Spec.Azure.UserAssignedIdentityName = strings.Repeat("a", 121)
+			identity.Spec.Azure.UserAssignedIdentityName = strings.Repeat("a", 129)
 
 			err := k8sClient.Create(ctx, identity)
 
 			Expect(err).To(HaveOccurred())
 			Expect(apierrors.IsInvalid(err)).To(BeTrue())
-			Expect(err.Error()).To(ContainSubstring("resolved user assigned identity name"))
+			Expect(err.Error()).To(ContainSubstring("spec.azure.userAssignedIdentityName"))
+			Expect(err.Error()).To(ContainSubstring("Too long"))
 		})
 
 		It("denies invalid ServiceAccount names through CRD schema validation", func() {
@@ -204,7 +206,7 @@ var _ = Describe("WorkloadIdentity Webhook", func() {
 			Expect(err.Error()).To(ContainSubstring("field is immutable"))
 		})
 
-		It("denies changing the user assigned identity suffix", func() {
+		It("denies changing the user assigned identity name", func() {
 			identity := validWebhookWorkloadIdentity(identityName, defaultWebhookNamespace)
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
 

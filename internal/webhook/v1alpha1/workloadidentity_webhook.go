@@ -125,11 +125,8 @@ func (v *WorkloadIdentityValidator) validationErrors(
 	}
 
 	var allErrs field.ErrorList
-	resolvedName := workloadidentity.UserAssignedIdentityName(
-		obj.Namespace,
-		obj.Spec.Azure.UserAssignedIdentityName,
-	)
-	if err := workloadidentity.ValidateUserAssignedIdentityName(resolvedName); err != nil {
+	identityName := obj.Spec.Azure.UserAssignedIdentityName
+	if err := workloadidentity.ValidateUserAssignedIdentityName(identityName); err != nil {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "azure", "userAssignedIdentityName"),
 			obj.Spec.Azure.UserAssignedIdentityName,
@@ -148,17 +145,13 @@ func (v *WorkloadIdentityValidator) validationErrors(
 				fmt.Sprintf("already referenced by WorkloadIdentity %s/%s", existing.Namespace, existing.Name),
 			))
 		}
-		existingResolvedName := workloadidentity.UserAssignedIdentityName(
-			existing.Namespace,
-			existing.Spec.Azure.UserAssignedIdentityName,
-		)
-		if strings.EqualFold(existingResolvedName, resolvedName) {
+		if strings.EqualFold(existing.Spec.Azure.UserAssignedIdentityName, identityName) {
 			allErrs = append(allErrs, field.Invalid(
 				field.NewPath("spec", "azure", "userAssignedIdentityName"),
 				obj.Spec.Azure.UserAssignedIdentityName,
 				fmt.Sprintf(
-					"resolved Azure user assigned identity name %q is already referenced by WorkloadIdentity %s/%s",
-					resolvedName,
+					"Azure user assigned identity name %q is already referenced by WorkloadIdentity %s/%s",
+					identityName,
 					existing.Namespace,
 					existing.Name,
 				),

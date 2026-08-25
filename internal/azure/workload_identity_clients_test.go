@@ -20,7 +20,7 @@ import (
 const (
 	testSubscriptionID  = "00000000-0000-0000-0000-000000000000"
 	testResourceGroupID = "/subscriptions/" + testSubscriptionID + "/resourceGroups/rg-test"
-	testUAMIName        = "default-uami-test"
+	testUAMIName        = "uami-test"
 	testUAMIID          = testResourceGroupID + "/providers/Microsoft.ManagedIdentity/userAssignedIdentities/" + testUAMIName
 	testFICID           = testUAMIID + "/federatedIdentityCredentials/fic-test"
 	testAzureClientID   = "11111111-1111-1111-1111-111111111111"
@@ -283,7 +283,7 @@ func TestSharedResourceGroupIsCreatedWithoutWorkloadOwnershipTags(t *testing.T) 
 	}
 }
 
-func TestNewUserAssignedIdentityUsesResolvedNameAndCompleteOwnershipTags(t *testing.T) {
+func TestNewUserAssignedIdentityUsesConfiguredNameAndCompleteOwnershipTags(t *testing.T) {
 	identity := managedTestWorkloadIdentity()
 	set := testClientSet(nil)
 	set.uami.getErr = notFoundResponseError()
@@ -306,16 +306,15 @@ func TestNewUserAssignedIdentityUsesResolvedNameAndCompleteOwnershipTags(t *test
 	}
 }
 
-func TestInvalidResolvedUserAssignedIdentityNameCausesNoAzureCalls(t *testing.T) {
+func TestInvalidUserAssignedIdentityNameCausesNoAzureCalls(t *testing.T) {
 	identity := managedTestWorkloadIdentity()
-	identity.Namespace = strings.Repeat("n", 63)
-	identity.Spec.Azure.UserAssignedIdentityName = strings.Repeat("a", 66)
+	identity.Spec.Azure.UserAssignedIdentityName = strings.Repeat("a", 129)
 	set := testClientSet(nil)
 
 	_, err := set.clients.ensure(context.Background(), identity, testIssuerURL, testSubject)
 
-	if err == nil || !strings.Contains(err.Error(), "resolved user assigned identity name") {
-		t.Fatalf("expected resolved identity name validation error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "user assigned identity name") {
+		t.Fatalf("expected identity name validation error, got %v", err)
 	}
 	if set.rg.gets != 0 || set.rg.puts != 0 || set.uami.gets != 0 {
 		t.Fatalf(
@@ -328,10 +327,9 @@ func TestInvalidResolvedUserAssignedIdentityNameCausesNoAzureCalls(t *testing.T)
 	assertNoIdentityOrCredentialWrites(t, set)
 }
 
-func TestInvalidResolvedUserAssignedIdentityNameDoesNotBlockDeletion(t *testing.T) {
+func TestInvalidUserAssignedIdentityNameDoesNotBlockDeletion(t *testing.T) {
 	identity := managedTestWorkloadIdentity()
-	identity.Namespace = strings.Repeat("n", 63)
-	identity.Spec.Azure.UserAssignedIdentityName = strings.Repeat("a", 66)
+	identity.Spec.Azure.UserAssignedIdentityName = strings.Repeat("a", 129)
 	set := testClientSet(nil)
 
 	if err := set.clients.delete(context.Background(), identity); err != nil {

@@ -76,14 +76,14 @@ metadata:
   namespace: orders
 spec:
   azure:
-    userAssignedIdentityName: api
+    userAssignedIdentityName: orders-api
     federatedIdentityCredentialName: kubernetes
   serviceAccount:
     name: orders-api
   deletionPolicy: Retain
 ```
 
-The Azure managed identity name resolves to `<namespace>-<userAssignedIdentityName>`, here `orders-api`.
+The Azure managed identity name is taken directly from `userAssignedIdentityName`, here `orders-api`.
 
 ```bash
 kubectl create namespace orders

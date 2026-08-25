@@ -181,7 +181,7 @@ var _ = Describe("WorkloadIdentity Controller", func() {
 				PrincipalID: "principal-id",
 				TenantID:    testTenantID,
 				AzureResources: []workloadidentityv1alpha1.AzureResource{{
-					ID:   "/subscriptions/test/resourceGroups/rg-wi-test/providers/Microsoft.ManagedIdentity/userAssignedIdentities/default-uami-test",
+					ID:   "/subscriptions/test/resourceGroups/rg-wi-test/providers/Microsoft.ManagedIdentity/userAssignedIdentities/uami-test",
 					Kind: "UserAssignedIdentity",
 				}},
 			}}

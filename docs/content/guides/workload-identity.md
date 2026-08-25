@@ -17,14 +17,14 @@ metadata:
   namespace: reports
 spec:
   azure:
-    userAssignedIdentityName: api
+    userAssignedIdentityName: reports-api
     federatedIdentityCredentialName: kubernetes
   serviceAccount:
     name: reports-api
   deletionPolicy: Retain
 ```
 
-The resolved Azure identity name is `reports-api`. The namespace prefix means two namespaces can use the same suffix without colliding. The resolved name must be unique case-insensitively across the installation and contain 3–128 supported characters.
+The Azure identity name is exactly `reports-api`; the operator does not prepend the Kubernetes namespace. It must be unique case-insensitively across the installation and contain 3–128 supported characters.
 
 The following fields are immutable:
 

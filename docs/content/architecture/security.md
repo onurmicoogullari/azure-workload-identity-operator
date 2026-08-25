@@ -31,7 +31,7 @@ Recovery can transfer an Azure identity from an earlier Kubernetes object UID. I
 
 ### `WorkloadIdentity`
 
-Namespaced writers can request identities and ServiceAccount relationships within their namespace, subject to global uniqueness checks for resolved Azure identity names.
+Namespaced writers can request identities and ServiceAccount relationships within their namespace, subject to global uniqueness checks for Azure identity names.
 
 ## Secret handling
 

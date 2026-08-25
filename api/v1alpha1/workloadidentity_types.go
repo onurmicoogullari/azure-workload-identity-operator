@@ -47,9 +47,8 @@ type WorkloadIdentitySpec struct {
 }
 
 type AzureWorkloadIdentityConfig struct {
-	// userAssignedIdentityName is the suffix used to resolve the Azure User Assigned Managed Identity name
-	// as "<namespace>-<userAssignedIdentityName>".
-	// +kubebuilder:validation:MinLength=1
+	// userAssignedIdentityName is the Azure User Assigned Managed Identity name.
+	// +kubebuilder:validation:MinLength=3
 	// +kubebuilder:validation:MaxLength=128
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_-]*$`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="field is immutable"
