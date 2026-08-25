@@ -429,10 +429,7 @@ func workloadIdentityTags(
 }
 
 func userAssignedIdentityName(identity *azworkloadidentityv1alpha1.WorkloadIdentity) string {
-	return workloadidentity.UserAssignedIdentityName(
-		identity.Namespace,
-		identity.Spec.Azure.UserAssignedIdentityName,
-	)
+	return identity.Spec.Azure.UserAssignedIdentityName
 }
 
 func desiredUserAssignedIdentityID(

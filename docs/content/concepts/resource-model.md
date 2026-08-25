@@ -39,9 +39,9 @@ There is one issuer because all `WorkloadIdentity` resources consume the same cl
 
 ## `WorkloadIdentity`
 
-`WorkloadIdentity` is namespaced. Its namespace participates in both the Kubernetes subject and the deterministic Azure identity name:
+`WorkloadIdentity` is namespaced. Its namespace participates in the Kubernetes subject, while the Azure identity name is configured explicitly:
 
-- Azure identity: `<namespace>-<spec.azure.userAssignedIdentityName>`
+- Azure identity: `<spec.azure.userAssignedIdentityName>`
 - Token subject: `system:serviceaccount:<namespace>:<spec.serviceAccount.name>`
 - Azure audience: `api://AzureADTokenExchange`
 

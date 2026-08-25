@@ -11,7 +11,7 @@ description: Record the decision not to let normal reconciliation adopt a retain
 
 ## Context
 
-A retained Azure managed identity can outlive its `WorkloadIdentity`. Recreating the same namespace and name produces the same deterministic Azure identity name but a new Kubernetes UID.
+A retained Azure managed identity can outlive its `WorkloadIdentity`. Recreating the same namespace and name with the same configured Azure identity name targets the retained identity but produces a new Kubernetes UID.
 
 Automatically replacing the ownership UID would let ordinary namespaced reconciliation transfer an external identity without a separate administrative decision. Azure APIs also lack the transaction and ETag primitives needed to make a multi-system transfer atomic.
 

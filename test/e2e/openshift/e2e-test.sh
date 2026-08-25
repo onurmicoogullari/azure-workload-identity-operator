@@ -39,7 +39,7 @@ Optional env:
   AZURE_CLI_PRINCIPAL_TYPE                    default: type resolved from the active Azure CLI identity
   OPERATOR_AZURE_PRINCIPAL_ID                 default: object ID resolved from AZURE_CLIENT_ID
   OPERATOR_AZURE_RESOURCE_ROLE                default: Contributor for an ephemeral Service Principal
-  AZURE_USER_ASSIGNED_IDENTITY_NAME           default: id-azwi-crc-test (suffix; Azure name is NAMESPACE-value)
+  AZURE_USER_ASSIGNED_IDENTITY_NAME           default: id-azwi-crc-test (exact Azure managed identity name)
   AZURE_FEDERATED_IDENTITY_CREDENTIAL_NAME    default: fidc-azwi-crc-test
   KEY_VAULT_NAME                              default: kv-azwi-<run-id>
   KEY_VAULT_SECRET_NAME                       default: test-secret
@@ -388,7 +388,7 @@ fi
 NAMESPACE=${NAMESPACE:-azwi-crc-test}
 WORKLOAD_IDENTITY_NAME=${WORKLOAD_IDENTITY_NAME:-azwi-crc-test}
 SERVICE_ACCOUNT_NAME=${SERVICE_ACCOUNT_NAME:-$WORKLOAD_IDENTITY_NAME}
-AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME="$NAMESPACE-$AZURE_USER_ASSIGNED_IDENTITY_NAME"
+AZURE_RESOLVED_USER_ASSIGNED_IDENTITY_NAME="$AZURE_USER_ASSIGNED_IDENTITY_NAME"
 SIGNING_KEY_SECRET_NAMESPACE=${SIGNING_KEY_SECRET_NAMESPACE:-openshift-kube-apiserver}
 SIGNING_KEY_SECRET_NAME=${SIGNING_KEY_SECRET_NAME:-bound-service-account-signing-key}
 SIGNING_KEY_SECRET_KEY=${SIGNING_KEY_SECRET_KEY:-service-account.pub}
@@ -3031,7 +3031,7 @@ spec:
   deletionPolicy: Retain
 EOF
   ); then
-    log ERROR "API-server admission accepted a second WorkloadIdentity owner for the resolved Azure identity"
+    log ERROR "API-server admission accepted a second WorkloadIdentity owner for the Azure identity"
     applied_federated_credential_conflict_workload_identity=true
     return 1
   fi

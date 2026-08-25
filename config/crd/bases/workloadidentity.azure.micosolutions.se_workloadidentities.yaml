@@ -64,11 +64,10 @@ spec:
                     - message: field is immutable
                       rule: self == oldSelf
                   userAssignedIdentityName:
-                    description: |-
-                      userAssignedIdentityName is the suffix used to resolve the Azure User Assigned Managed Identity name
-                      as "<namespace>-<userAssignedIdentityName>".
+                    description: userAssignedIdentityName is the Azure User Assigned
+                      Managed Identity name.
                     maxLength: 128
-                    minLength: 1
+                    minLength: 3
                     pattern: ^[A-Za-z0-9][A-Za-z0-9_-]*$
                     type: string
                     x-kubernetes-validations:

@@ -32,7 +32,7 @@ flowchart TD
 
 ## Deterministic names and keys
 
-The managed identity name is `<namespace>-<suffix>`. Admission rejects case-insensitive collisions across all workload identities.
+The managed identity name is exactly `spec.azure.userAssignedIdentityName`; the namespace is not prepended. Admission rejects case-insensitive collisions across all workload identities.
 
 The ownership logical key is lowercase hexadecimal SHA-256 of `<namespace>/<WorkloadIdentity name>`. It is independent of object UID, allowing the controller to recognize a recreated logical object without authorizing it automatically.
 

@@ -5,7 +5,7 @@ description: Field, validation, status, and naming reference for WorkloadIdentit
 
 # `WorkloadIdentity` API
 
-`WorkloadIdentity` is namespaced. Its namespace participates in the Azure identity name and federated subject.
+`WorkloadIdentity` is namespaced. Its namespace participates in the federated subject, while the Azure identity name is configured explicitly.
 
 ```yaml
 apiVersion: workloadidentity.azure.micosolutions.se/v1alpha1
@@ -15,7 +15,7 @@ metadata:
   namespace: reports
 spec:
   azure:
-    userAssignedIdentityName: api
+    userAssignedIdentityName: reports-api
     federatedIdentityCredentialName: kubernetes
   serviceAccount:
     name: reports-api
@@ -26,22 +26,21 @@ spec:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `spec.azure.userAssignedIdentityName` | string | Yes | — | Suffix used in `<namespace>-<suffix>`. 1–128 characters before resolved-name validation; alphanumeric start, then alphanumeric, `_`, or `-`. Immutable. |
+| `spec.azure.userAssignedIdentityName` | string | Yes | — | Exact Azure managed identity name. 3–128 characters; alphanumeric start, then alphanumeric, `_`, or `-`. Immutable. |
 | `spec.azure.federatedIdentityCredentialName` | string | Yes | — | Azure child credential name, 1–120 supported characters. Immutable. |
 | `spec.serviceAccount.name` | string | Yes | — | ServiceAccount to create or adopt. DNS subdomain syntax, maximum 253 characters. Immutable. |
 | `spec.deletionPolicy` | `Retain` or `Delete` | No | `Retain` | Whether to delete verified operator-created resources. |
 
 Admission also enforces:
 
-- the resolved Azure identity name is 3–128 supported characters;
-- resolved Azure identity names are unique case-insensitively across the cluster; and
+- Azure identity names are unique case-insensitively across the cluster; and
 - a ServiceAccount is referenced by at most one `WorkloadIdentity` in its namespace.
 
 ## Derived values
 
 | Value | Formula |
 | --- | --- |
-| Managed identity name | `<metadata.namespace>-<spec.azure.userAssignedIdentityName>` |
+| Managed identity name | `<spec.azure.userAssignedIdentityName>` |
 | Subject | `system:serviceaccount:<metadata.namespace>:<spec.serviceAccount.name>` |
 | Audience | `api://AzureADTokenExchange` |
 | Logical identity key | Lowercase hexadecimal SHA-256 of `<namespace>/<WorkloadIdentity name>` |

@@ -12,12 +12,9 @@ func TestLogicalIdentityKeyIsLowercaseSHA256OfNamespacedName(t *testing.T) {
 	}
 }
 
-func TestResolvedUserAssignedIdentityNameValidation(t *testing.T) {
-	if got := UserAssignedIdentityName("team-a", "payments"); got != "team-a-payments" {
-		t.Fatalf("resolved name = %q", got)
-	}
-	if err := ValidateUserAssignedIdentityName("team-a-payments"); err != nil {
-		t.Fatalf("valid resolved name: %v", err)
+func TestUserAssignedIdentityNameValidation(t *testing.T) {
+	if err := ValidateUserAssignedIdentityName("payments"); err != nil {
+		t.Fatalf("valid name: %v", err)
 	}
 	if err := ValidateUserAssignedIdentityName(strings.Repeat("a", 129)); err == nil {
 		t.Fatal("expected overlength Azure identity name to be rejected")
