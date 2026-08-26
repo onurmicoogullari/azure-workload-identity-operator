@@ -204,7 +204,7 @@ assignments and cannot grant data access to itself.
 Choose one bootstrap model:
 
 | Model | Resources created before installation | Service Principal access |
-| --- | --- |
+| --- | --- | --- |
 | **Pre-created resource group (recommended)** | A dedicated resource group | `Contributor` and `Storage Blob Data Contributor` on the dedicated resource group |
 | **Operator-created resource group** | None | `Contributor` and `Storage Blob Data Contributor` at subscription scope for an unattended bootstrap |
 
@@ -320,6 +320,22 @@ The default production profile runs two manager replicas, two mutating-webhook r
 The chart writes the subscription ID, resource group, and location into the retained immutable `azure-workload-identity-operator-startup-config` ConfigMap. Every manager Pod mounts that ConfigMap and exits before constructing Kubernetes or Azure clients if its values are missing, malformed, or different from the command-line configuration.
 
 Changing Azure scope is a migration, not an in-place upgrade. See [Ownership and lifecycle](../concepts/ownership-and-lifecycle.md).
+
+:::warning Plan for an OpenShift API-server rollout
+After installation, creating `OIDCIssuer/default` with
+`spec.openShift.updateServiceAccountIssuer: true` changes
+`Authentication/cluster.spec.serviceAccountIssuer` when its current value does
+not already match the published issuer. OpenShift then rolls out a new revision
+of the Kubernetes API-server Pods, which can briefly interrupt API requests and
+existing `oc` sessions. Schedule this change appropriately and wait for the
+`kube-apiserver`, `authentication`, and `openshift-apiserver` ClusterOperators
+to settle.
+
+This rollout replaces control-plane Pods; it does not reboot nodes or restart
+application workloads. No rollout occurs when the configured issuer already
+matches. See [Manage the OIDC issuer](../guides/oidc-issuer.md) for the complete
+handoff behavior.
+:::
 
 ## Next step
 

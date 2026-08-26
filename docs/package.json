@@ -6,6 +6,7 @@
     "start": "docusaurus start",
     "build": "docusaurus build",
     "clear": "docusaurus clear",
+    "lint": "markdownlint-cli2 \"README.md\" \"content/**/*.{md,mdx}\"",
     "serve": "docusaurus serve",
     "typecheck": "tsc"
   },
@@ -26,6 +27,7 @@
     "@docusaurus/module-type-aliases": "3.10.2",
     "@docusaurus/tsconfig": "3.10.2",
     "@docusaurus/types": "3.10.2",
+    "markdownlint-cli2": "0.22.0",
     "typescript": "5.9.3"
   },
   "engines": {
