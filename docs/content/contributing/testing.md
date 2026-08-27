@@ -83,6 +83,7 @@ It creates real Azure resources and may create an ephemeral operator Service Pri
 ```bash
 cd docs
 npm ci
+npm run lint
 npm run typecheck
 npm run build
 ```

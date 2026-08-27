@@ -1,8 +1,8 @@
 # Documentation site
 
 This directory contains the Docusaurus source for the Azure Workload Identity
-Operator manual. Pull requests type-check and build the site; pushes to `main`
-publish successful builds to GitHub Pages at
+Operator manual. Pull requests lint, type-check, and build the site; pushes to
+`main` publish successful builds to GitHub Pages at
 <https://onurmicoogullari.github.io/azure-workload-identity-operator/>.
 
 Repository administrators must select **GitHub Actions** as the publishing
@@ -20,6 +20,7 @@ npm run start
 Before review:
 
 ```bash
+npm run lint
 npm run typecheck
 npm run build
 ```

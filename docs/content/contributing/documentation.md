@@ -57,6 +57,7 @@ npm run start
 Before review:
 
 ```bash
+npm run lint
 npm run typecheck
 npm run build
 ```
@@ -76,7 +77,7 @@ The build fails on broken internal links. Inspect both light and dark themes and
 
 ## Publication policy
 
-Pull requests must type-check and build the complete site. Successful pushes to `main` upload the production build and deploy it through the `github-pages` environment. Repository administrators must configure **Settings → Pages → Build and deployment → Source** to use **GitHub Actions**.
+Pull requests must lint, type-check, and build the complete site. Successful pushes to `main` upload the production build and deploy it through the `github-pages` environment. Repository administrators must configure **Settings → Pages → Build and deployment → Source** to use **GitHub Actions**.
 
 Publication requires:
 

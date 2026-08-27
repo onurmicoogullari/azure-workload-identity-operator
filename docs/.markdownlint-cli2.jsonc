@@ -1,0 +1,12 @@
+{
+  "config": {
+    // Docusaurus front matter supplies the page title independently of its H1.
+    "MD025": false,
+    // The MDX landing page renders this project-local React component.
+    "MD033": {
+      "allowed_elements": ["Homepage"]
+    },
+    // Long links, tables, and generated-looking reference values are clearer unwrapped.
+    "MD013": false
+  }
+}
