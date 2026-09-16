@@ -30,6 +30,15 @@
     "markdownlint-cli2": "0.23.2",
     "typescript": "5.9.3"
   },
+  "overrides": {
+    "markdownlint-cli2": {
+      "smol-toml": "^1.7.1"
+    },
+    "serialize-javascript": "^7.0.5",
+    "sockjs": {
+      "uuid": "^11.1.1"
+    }
+  },
   "engines": {
     "node": ">=20.0"
   }
