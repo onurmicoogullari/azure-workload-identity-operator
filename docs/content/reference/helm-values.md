@@ -49,7 +49,9 @@ the Helm release.
 | `manager.nodeSelector` | `{}` | Manager scheduling selector. |
 | `manager.tolerations` | `[]` | Manager tolerations. |
 | `manager.affinity` | `{}` | Manager affinity. |
-| `manager.topologySpreadConstraints` | zone and hostname soft spread | Default high-availability spread. |
+| `manager.topologySpreadConstraints` | zone and hostname soft spread | Default high-availability spread. Each rule sets `matchLabelKeys: [pod-template-hash]` so rolling updates spread only Pods from the same ReplicaSet. |
+
+Setting `manager.topologySpreadConstraints` or `azureWorkloadIdentityWebhook.topologySpreadConstraints` replaces the whole default list. Add `matchLabelKeys: [pod-template-hash]` to each custom rule to keep the same rolling-update behavior.
 
 Default manager resources:
 
@@ -164,6 +166,7 @@ namespace and stores the key pair as `tls.crt` and `tls.key`. See the official
 | `azureWorkloadIdentityWebhook.metricsAddr` | `:8095` | Webhook metrics address. |
 | `azureWorkloadIdentityWebhook.metricsBackend` | `prometheus` | Metrics backend. |
 | `azureWorkloadIdentityWebhook.priorityClassName` | `system-cluster-critical` | Scheduling priority. |
+| `azureWorkloadIdentityWebhook.topologySpreadConstraints` | zone and hostname soft spread | Default high-availability spread. Each rule sets `matchLabelKeys: [pod-template-hash]` so rolling updates spread only Pods from the same ReplicaSet. Custom rules replace the defaults; see the note under [Manager](#manager). |
 | `azureWorkloadIdentityWebhook.mutatingWebhookNamespaceSelector` | `{}` | Optional namespace selector for admission. |
 | `azureWorkloadIdentityWebhook.service.type` | `ClusterIP` | Webhook Service type. |
 
