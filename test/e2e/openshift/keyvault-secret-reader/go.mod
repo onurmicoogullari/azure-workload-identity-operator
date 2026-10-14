@@ -1,6 +1,6 @@
 module keyvault-secret-reader
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.14.0
@@ -16,8 +16,8 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
-	golang.org/x/crypto v0.52.0 // indirect
-	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )
