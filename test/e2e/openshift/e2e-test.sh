@@ -2361,7 +2361,7 @@ prepare_key_vault_secret_reader_build_context() {
   chmod 0555 "$build_context/keyvault-secret-reader"
 
   cat >"$build_context/Dockerfile" <<'EOF'
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 COPY keyvault-secret-reader /keyvault-secret-reader
 USER nonroot:nonroot
 ENTRYPOINT ["/keyvault-secret-reader"]
