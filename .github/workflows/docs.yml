@@ -77,3 +77,30 @@ jobs:
       - name: Deploy GitHub Pages
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5
+
+  report-scheduled-failure:
+    name: Report scheduled failure
+    # Opens one tracking issue per workflow, or comments on the open one, so a
+    # failed weekly run is not only visible in the Actions tab.
+    if: failure() && github.event_name == 'schedule'
+    needs: build
+    permissions:
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or update tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: Scheduled documentation checks failed
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          number=$(gh issue list --state open --limit 200 --json number,title \
+            --jq '[.[] | select(.title == env.TITLE)][0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "Failed again: $RUN_URL"
+          else
+            gh issue create --title "$TITLE" --body "The weekly documentation audit, lint, type-check, or build on main failed: $RUN_URL
+
+          See docs/content/contributing/vulnerability-scanning.md for how to fix or review findings. Close this issue once a scheduled run passes again."
+          fi

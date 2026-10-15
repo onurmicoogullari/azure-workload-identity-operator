@@ -31,8 +31,16 @@ if (!result.stdout) {
 }
 
 const report = JSON.parse(result.stdout);
+// npm audit reports registry and network failures as JSON with an error field
+// and no vulnerability data. Fail instead of treating that as a clean audit.
+if (report.error || !report.vulnerabilities) {
+  console.error("npm audit did not return a vulnerability report:");
+  console.error(report.message ?? result.stdout);
+  process.exit(1);
+}
+
 const advisories = new Map();
-for (const vulnerability of Object.values(report.vulnerabilities ?? {})) {
+for (const vulnerability of Object.values(report.vulnerabilities)) {
   for (const via of vulnerability.via) {
     if (typeof via === "object") {
       advisories.set(via.url.split("/").pop(), via);
