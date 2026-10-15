@@ -63,6 +63,8 @@ manager:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # matchLabelKeys limits each rule to Pods from the same ReplicaSet, so a
+  # rolling update does not spread new Pods against outgoing ones.
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone
@@ -71,6 +73,8 @@ manager:
         matchLabels:
           app.kubernetes.io/name: azure-workload-identity-operator
           control-plane: controller-manager
+      matchLabelKeys:
+        - pod-template-hash
     - maxSkew: 1
       topologyKey: kubernetes.io/hostname
       whenUnsatisfiable: ScheduleAnyway
@@ -78,6 +82,8 @@ manager:
         matchLabels:
           app.kubernetes.io/name: azure-workload-identity-operator
           control-plane: controller-manager
+      matchLabelKeys:
+        - pod-template-hash
 
 serviceAccount:
   create: true
@@ -163,6 +169,8 @@ azureWorkloadIdentityWebhook:
       memory: 20Mi
   tolerations: []
   affinity: {}
+  # matchLabelKeys limits each rule to Pods from the same ReplicaSet, so a
+  # rolling update does not spread new Pods against outgoing ones.
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone
@@ -171,6 +179,8 @@ azureWorkloadIdentityWebhook:
         matchLabels:
           app: workload-identity-webhook
           azure-workload-identity.io/system: "true"
+      matchLabelKeys:
+        - pod-template-hash
     - maxSkew: 1
       topologyKey: kubernetes.io/hostname
       whenUnsatisfiable: ScheduleAnyway
@@ -178,6 +188,8 @@ azureWorkloadIdentityWebhook:
         matchLabels:
           app: workload-identity-webhook
           azure-workload-identity.io/system: "true"
+      matchLabelKeys:
+        - pod-template-hash
   podLabels: {}
   podAnnotations:
     sidecar.istio.io/inject: "false"

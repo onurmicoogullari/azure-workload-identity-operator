@@ -326,6 +326,12 @@ verify_rendered_contracts() {
     echo "rendered chart pins a UID or GID and is incompatible with OpenShift restricted SCC" >&2
     exit 1
   fi
+  # Two default spread rules per Deployment, each scoped to one ReplicaSet.
+  spread_scope_count=$(grep -cx ' *- pod-template-hash' "$rendered" || true)
+  if [[ $spread_scope_count -ne 4 ]]; then
+    echo "default topology spread rendered $spread_scope_count pod-template-hash matchLabelKeys instead of 4" >&2
+    exit 1
+  fi
   if grep -Fq overridden "$rendered"; then
     echo "rendered chart allowed user values to replace an ownership or selector label" >&2
     exit 1

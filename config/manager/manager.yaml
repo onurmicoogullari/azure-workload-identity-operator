@@ -44,6 +44,8 @@ spec:
                 matchLabels:
                   control-plane: controller-manager
                   app.kubernetes.io/name: azure-workload-identity-operator
+              matchLabelKeys:
+              - pod-template-hash
               topologyKey: kubernetes.io/hostname
       securityContext:
         # Projects are configured by default to adhere to the "restricted" Pod Security Standards.
@@ -60,6 +62,8 @@ spec:
           matchLabels:
             control-plane: controller-manager
             app.kubernetes.io/name: azure-workload-identity-operator
+        matchLabelKeys:
+        - pod-template-hash
       containers:
       - command:
         - /manager
