@@ -29,6 +29,16 @@ required_values=(
   --set-string azure.location=swedencentral
 )
 
+# Helm releases differ in how many blank lines they emit after the last
+# template line, so drop trailing blank lines before comparing manifests.
+# Blank lines inside the content are kept.
+strip_trailing_blank_lines() {
+  awk '
+    /^[[:space:]]*$/ { pending = pending $0 "\n"; next }
+    { printf "%s", pending; pending = ""; print }
+  ' "$@"
+}
+
 assert_resource_contains() {
   local manifest=$1
   local kind=$2
@@ -67,8 +77,8 @@ render_and_verify_source_sync() {
     --namespace "$namespace" \
     --show-only templates/rbac/manager-role.yaml \
     "${required_values[@]}" >"$manager_role_rendered"
-  sed -n '/^rules:/,$p' "$manager_role_rendered" >"$chart_rbac_rules"
-  sed -n '/^rules:/,$p' config/rbac/role.yaml >"$generated_rbac_rules"
+  sed -n '/^rules:/,$p' "$manager_role_rendered" | strip_trailing_blank_lines >"$chart_rbac_rules"
+  sed -n '/^rules:/,$p' config/rbac/role.yaml | strip_trailing_blank_lines >"$generated_rbac_rules"
   if ! diff -u "$generated_rbac_rules" "$chart_rbac_rules"; then
     echo "Helm manager RBAC drifted from generated RBAC" >&2
     exit 1
@@ -443,8 +453,9 @@ verify_crd_sync() {
   for plural in oidcissuers workloadidentities workloadidentityrecoveries; do
     chart_crd="$chart_dir/templates/crd/${plural}.workloadidentity.azure.micosolutions.se.yaml"
     generated_crd="config/crd/bases/workloadidentity.azure.micosolutions.se_${plural}.yaml"
-    sed '1d;$d;/    "helm.sh\/resource-policy": keep/d' "$chart_crd" >"$normalized_chart_crd"
-    sed '1d' "$generated_crd" >"$normalized_generated_crd"
+    strip_trailing_blank_lines "$chart_crd" |
+      sed '1d;$d;/    "helm.sh\/resource-policy": keep/d' >"$normalized_chart_crd"
+    strip_trailing_blank_lines "$generated_crd" | sed '1d' >"$normalized_generated_crd"
     if ! diff -u "$normalized_generated_crd" "$normalized_chart_crd"; then
       echo "Helm CRD template drifted from generated CRD: $plural" >&2
       exit 1
