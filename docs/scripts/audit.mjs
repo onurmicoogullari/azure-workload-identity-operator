@@ -5,19 +5,8 @@
 // that the reason still holds, then move the expiry at most 90 days ahead.
 import { spawnSync } from "node:child_process";
 
-const allowlist = new Map([
-  [
-    "GHSA-vfj7-8cjw-p6xm",
-    {
-      name: "braces",
-      reason:
-        "No patched release exists. Only reached at build time through chokidar, " +
-        "micromatch, and markdownlint-cli2 on glob patterns from this repository.",
-      owner: "@onurmicoogullari",
-      expires: "2027-01-12",
-    },
-  ],
-]);
+// Entries are [advisory ID, { name, reason, owner, expires: "YYYY-MM-DD" }].
+const allowlist = new Map();
 
 const failingSeverities = new Set(["high", "critical"]);
 

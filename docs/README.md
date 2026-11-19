@@ -35,16 +35,15 @@ updating dependencies.
 `scripts/audit.mjs` allowlists advisories that have no patched release. Each
 entry records why the exposure is acceptable, an owner, and an expiry date. The
 audit fails after the expiry until the owner reviews the entry; see
-`content/contributing/vulnerability-scanning.md` for the review steps. It currently allowlists
-`braces` (GHSA-vfj7-8cjw-p6xm), which is only reached at build time on glob
-patterns from this repository.
+`content/contributing/vulnerability-scanning.md` for the review steps. The
+allowlist is currently empty.
 
 The overrides in `package.json` keep transitive dependencies on patched versions
 while their parents require older releases:
 
 - `markdownlint-cli2` pins vulnerable `smol-toml`; use 1.9.0 or later.
 - The webpack copy and CSS minimizer plugins require `serialize-javascript` 6;
-  use 7.1.2 or later to address code execution, denial of service, and XSS
+  use 7.1.3 or later to address code execution, denial of service, and XSS
   advisories.
 - `sockjs` requires `uuid` 8; use the patched CommonJS-compatible 11.1.1 release.
 - The cssnano 6 plugins used by Docusaurus require `postcss-selector-parser` 6;
